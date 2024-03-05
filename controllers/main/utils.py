@@ -15,12 +15,15 @@ def euler2rotmat(euler_angles):
     #           R: A 3x3 numpy array that represents the rotation matrix of the euler angles
     
     # --- YOUR CODE HERE ---
+    phi = euler_angles[0] # roll
+    theta = euler_angles[1] # pitch
+    psi = euler_angles[2] # yaw
 
-    # R_roll = 
-    # R_pitch = 
-    # R_yaw = 
+    R_roll = np.array([[1,0,0],[0,np.cos(phi),-np.sin(phi)],[0,np.sin(phi),np.cos(phi)]])
+    R_pitch = np.array([[np.cos(theta),0,np.sin(theta)],[0,1,0],[-np.sin(theta),0,np.cos(theta)]])
+    R_yaw = np.array([[np.cos(psi),-np.sin(psi),0],[np.sin(psi),np.cos(psi),0],[0,0,1]])
 
-    # R =
+    R = R_yaw*R_pitch*R_roll
     
     return R
 
@@ -40,14 +43,19 @@ def rot_body2inertial(control_commands, euler_angles):
 
     # --- YOUR CODE HERE ---
 
-    # vel_world = 
+    # Controller is in World-frame
+    vel_body = np.array([control_commands[0], control_commands[1], 0])
     
-    # R = 
+    R = euler2rotmat(euler_angles)
     
-    # vel_body = 
-    
-    # control_commands = 
+    vel_world = np.matmul(R,np.transpose(vel_body))
+    print(R)
+    # np.transpose()
+    print(vel_world)
+    print(vel_body)
+    control_commands[0] = vel_world[0]
 
+    control_commands[1] = vel_world[1]
 
 
     return control_commands
