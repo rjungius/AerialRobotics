@@ -23,7 +23,7 @@ def euler2rotmat(euler_angles):
     R_pitch = np.array([[np.cos(theta),0,np.sin(theta)],[0,1,0],[-np.sin(theta),0,np.cos(theta)]])
     R_yaw = np.array([[np.cos(psi),-np.sin(psi),0],[np.sin(psi),np.cos(psi),0],[0,0,1]])
 
-    R = R_yaw*R_pitch*R_roll
+    R = R_yaw @ R_pitch @ R_roll
     
     return R
 
@@ -48,7 +48,7 @@ def rot_body2inertial(control_commands, euler_angles):
     
     R = euler2rotmat(euler_angles)
     
-    vel_world = np.matmul(R,np.transpose(vel_body))
+    vel_world = np.matmul(R,vel_body)
     print(R)
     # np.transpose()
     print(vel_world)
