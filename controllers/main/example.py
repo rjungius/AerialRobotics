@@ -33,6 +33,14 @@ def obstacle_avoidance(sensor_data):
 
     return control_command
 
+def clip_angle(angle):
+    angle = angle%(2*np.pi)
+    if angle > np.pi:
+        angle -= 2*np.pi
+    if angle < -np.pi:
+        angle += 2*np.pi
+    return angle
+
 # Coverage path planning
 setpoints = [[0.0, 0.0, 1.0, 0.0], [0.0, 3.0, 1.25, np.pi/2], [5.0, 3.0, 1.5, np.pi], [5.0, 0.0, 0.25, 1.5*np.pi], [0.0, 0.0, 1.0, 0.0]]
 index_current_setpoint = 0
@@ -56,7 +64,11 @@ def path_planning(sensor_data,dt):
         timer += dt
     # Hover at the final setpoint
     if index_current_setpoint == len(setpoints):
-        control_command = [startpos[0], startpos[1], startpos[2]-0.05, 0.0]
+        # Uncomment for KF
+        # control_command = [startpos[0], startpos[1], startpos[2]-0.05, 0.0]
+        control_command = [0.0,0.0,1.0,0.0] #KF final setpoint
+
+
 
         if timer_done is None:
             timer_done = True
@@ -66,7 +78,7 @@ def path_planning(sensor_data,dt):
     # Get the goal position and drone position
     current_setpoint = setpoints[index_current_setpoint]
     x_drone, y_drone, z_drone, yaw_drone = sensor_data['x_global'], sensor_data['y_global'], sensor_data['z_global'], sensor_data['yaw']
-    distance_drone_to_goal = np.linalg.norm([current_setpoint[0] - x_drone, current_setpoint[1] - y_drone, current_setpoint[2] - z_drone, current_setpoint[3] - yaw_drone%(2*np.pi)])
+    distance_drone_to_goal = np.linalg.norm([current_setpoint[0] - x_drone, current_setpoint[1] - y_drone, current_setpoint[2] - z_drone, clip_angle(current_setpoint[3]) - clip_angle(yaw_drone)])
 
     # When the drone reaches the goal setpoint, e.g., distance < 0.1m
     if distance_drone_to_goal < 0.1:
