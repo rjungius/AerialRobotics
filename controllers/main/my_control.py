@@ -72,7 +72,7 @@ def get_command(sensor_data, camera_data, dt):
             return control_command
         
         if evade == None:
-            if sensor_data['range_front'] > 0.2:
+            if sensor_data['range_front'] > 0.3 and map[idx_x+1, idx_y]:
                 control_command[0]=0.3
             else: #decide to turn either left or right, and then evade until front is free
                 if pos_y < 1.5 and sensor_data["range_left"] > 0.4:
@@ -82,6 +82,11 @@ def get_command(sensor_data, camera_data, dt):
                         evade = "right"
                     else:
                         evade = "left"
+        
+        if sensor_data["range_left"] < 0.2:
+            control_command[1] = -0.3
+        if sensor_data["range_right"] < 0.2:
+            control_command[1] = 0.3
 
         if evade == "left":
             control_command[1] = 0.3
