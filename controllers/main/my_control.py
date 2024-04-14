@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 import cv2
+import networkx as nx
 
 # Global variables
 on_ground = True
@@ -11,6 +12,8 @@ timer = None
 startpos = None
 timer_done = None
 mode = None
+graph = None
+next_cell = None
 
 # The available ground truth state measurements can be accessed by calling sensor_data[item]. All values of "item" are provided as defined in main.py lines 296-323. 
 # The "item" values that you can later use in the hardware project are:
@@ -25,7 +28,7 @@ mode = None
 
 # This is the main function where you will implement your control algorithm
 def get_command(sensor_data, camera_data, dt):
-    global on_ground, startpos, mode
+    global on_ground, startpos, mode, graph, next_cell
 
     # Open a window to display the camera image
     # NOTE: Displaying the camera image will slow down the simulation, this is just for testing
@@ -47,15 +50,19 @@ def get_command(sensor_data, camera_data, dt):
         on_ground = False
 
     # ---- YOUR CODE HERE ----
-    if mode == None: # successful launch
+    if mode == None: 
         mode = 0
-
+    if graph == None:
+        graph = nx.grid_2d_graph(int(5/res_pos), int(3/res_pos))
+        for u,v in graph.edges():
+            graph[u][v]["weight"] = 1
+    
     pos_x = sensor_data['x_global']
     pos_y = sensor_data['y_global']
-    map_x = int(np.round(sensor_data['x_global']/res_pos))
-    map_y = int(np.round(sensor_data['y_global']/res_pos))
+    idx_x = int(np.round((pos_x)/res_pos,0))
+    idx_y = int(np.round((pos_y)/res_pos,0))
     map = occupancy_map(sensor_data)
-
+    
     if mode == 0: # Reach target area
         control_command = [0.0, 0.0, height_desired, 0.0]
         
@@ -64,29 +71,25 @@ def get_command(sensor_data, camera_data, dt):
             mode = 1
             return control_command
         
-        if all(map[map_x+1, map_y+i] >= 0 for i in range(-1, 2)) \
-           and all(map[map_x+2, map_y+i] >= 0 for i in range(-1, 2)):
-            control_command[0]=0.3
-            print(map[map_x+2, map_y-1], \
-                  map[map_x+2, map_y], \
-                  map[map_x+2, map_y+1])
-            
-            print(map[map_x+1, map_y-1], \
-                  map[map_x+1, map_y], \
-                  map[map_x+1, map_y+1])
-            print()
+        if next_cell == None:
+            update_graph(graph, map)
+            target = (int(np.round(4.5/res_pos)), int(np.round(1.5/res_pos)))
+            next_cell = nx.astar_path(graph, (idx_x, idx_y), target)[1]
+        
+        # target = next_cell[0/1]*res_pos + res_pos/2
+        tol = 1e-2
+        if pos_x - (next_cell[0]*res_pos + res_pos/2) > tol:
+            control_command[0] = -0.1
+        if pos_x - (next_cell[0]*res_pos + res_pos/2) < -tol:
+            control_command[0] = 0.1
+        
+        if pos_y - (next_cell[1]*res_pos + res_pos/2) > tol:
+            control_command[1] = -0.1
+        if pos_y - (next_cell[1]*res_pos + res_pos/2) < -tol:
+            control_command[1] = 0.1
 
-        if pos_y < 1.4 and map[map_x, map_y+1] >= 0:  # go to center of map
-            control_command[1] = 0.3
-        if pos_y > 1.6 and map[map_x, map_y-1] >= 0: # go to center of map
-            control_command[1] = -0.3
-
-        # override basic control if theres an obstacle
-        if control_command[0] == 0.0 and pos_y > 1.2 and pos_y < 1.8:
-            if map[map_x, map_y+1] >= 0:
-                control_command[1] = 0.3
-            else:
-                control_command[1] = -0.3
+        if control_command[0] == 0 and control_command [1] == 0:
+            next_cell = None
 
     elif mode == 1: # Find target pad
         control_command = [0.0, 0.0, height_desired, 0.0]
@@ -156,6 +159,49 @@ def occupancy_map(sensor_data):
     t +=1
 
     return map
+
+
+def update_graph(graph, map):
+    x,y = map.shape
+    for i in range(x):
+        for j in range(y):
+            if map[i][j] < -0.3 and graph.has_node((i,j)):
+                graph.remove_node((i,j))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # Control from the exercises
