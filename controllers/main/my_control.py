@@ -13,7 +13,7 @@ startpos = None
 timer_done = None
 mode = None
 graph = None
-next_cell = None
+evade = None
 
 # The available ground truth state measurements can be accessed by calling sensor_data[item]. All values of "item" are provided as defined in main.py lines 296-323. 
 # The "item" values that you can later use in the hardware project are:
@@ -28,7 +28,7 @@ next_cell = None
 
 # This is the main function where you will implement your control algorithm
 def get_command(sensor_data, camera_data, dt):
-    global on_ground, startpos, mode, graph, next_cell
+    global on_ground, startpos, mode, graph, evade
 
     # Open a window to display the camera image
     # NOTE: Displaying the camera image will slow down the simulation, this is just for testing
@@ -64,32 +64,33 @@ def get_command(sensor_data, camera_data, dt):
     map = occupancy_map(sensor_data)
     
     if mode == 0: # Reach target area
-        control_command = [0.0, 0.0, height_desired, 0.0]
+        control_command = [0.0, 0.0, height_desired, 0]
         
         if pos_x>3.5:
             print("Landing Zone reached")
             mode = 1
             return control_command
         
-        if next_cell == None:
-            update_graph(graph, map)
-            target = (int(np.round(4.5/res_pos)), int(np.round(1.5/res_pos)))
-            next_cell = nx.astar_path(graph, (idx_x, idx_y), target)[1]
-        
-        # target = next_cell[0/1]*res_pos + res_pos/2
-        tol = 1e-2
-        if pos_x - (next_cell[0]*res_pos + res_pos/2) > tol:
-            control_command[0] = -0.1
-        if pos_x - (next_cell[0]*res_pos + res_pos/2) < -tol:
-            control_command[0] = 0.1
-        
-        if pos_y - (next_cell[1]*res_pos + res_pos/2) > tol:
-            control_command[1] = -0.1
-        if pos_y - (next_cell[1]*res_pos + res_pos/2) < -tol:
-            control_command[1] = 0.1
+        if evade == None:
+            if sensor_data['range_front'] > 0.2:
+                control_command[0]=0.3
+            else: #decide to turn either left or right, and then evade until front is free
+                if pos_y < 1.5 and sensor_data["range_left"] > 0.4:
+                    evade = "left"
+                else:
+                    if sensor_data["range_right"] > 0.4:
+                        evade = "right"
+                    else:
+                        evade = "left"
 
-        if control_command[0] == 0 and control_command [1] == 0:
-            next_cell = None
+        if evade == "left":
+            control_command[1] = 0.3
+            if sensor_data["range_front"] > 0.4:
+                evade = None
+        if evade == "right":
+            control_command[1] = -0.3
+            if sensor_data["range_front"] > 0.4:
+                evade = None
 
     elif mode == 1: # Find target pad
         control_command = [0.0, 0.0, height_desired, 0.0]
