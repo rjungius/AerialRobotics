@@ -10,6 +10,7 @@ height_desired = 1.0
 timer = None
 startpos = None
 timer_done = None
+mode = None
 
 # The available ground truth state measurements can be accessed by calling sensor_data[item]. All values of "item" are provided as defined in main.py lines 296-323. 
 # The "item" values that you can later use in the hardware project are:
@@ -24,7 +25,7 @@ timer_done = None
 
 # This is the main function where you will implement your control algorithm
 def get_command(sensor_data, camera_data, dt):
-    global on_ground, startpos
+    global on_ground, startpos, mode
 
     # Open a window to display the camera image
     # NOTE: Displaying the camera image will slow down the simulation, this is just for testing
@@ -33,24 +34,78 @@ def get_command(sensor_data, camera_data, dt):
     
     # Take off
     if startpos is None:
-        startpos = [sensor_data['x_global'], sensor_data['y_global'], sensor_data['range_down']]    
+        startpos = [sensor_data['x_global'], sensor_data['y_global'], sensor_data['range_down']]   
+        print(startpos)
+        print(int(startpos[0]/res_pos), int(startpos[1]/res_pos), int(startpos[2]/res_pos))
     if on_ground and sensor_data['range_down'] < 0.49:
         control_command = [0.0, 0.0, height_desired, 0.0]
         return control_command
     else:
+        if on_ground:
+            print(sensor_data['x_global'], sensor_data['y_global'])
+            print(int(sensor_data['x_global']/res_pos), int(sensor_data['y_global']/res_pos))
         on_ground = False
 
     # ---- YOUR CODE HERE ----
-    control_command = [0.0, 0.0, height_desired, 1.0]
-    on_ground = False
-    # map = occupancy_map(sensor_data)
-    
+    if mode == None: # successful launch
+        mode = 0
+
+    pos_x = sensor_data['x_global']
+    pos_y = sensor_data['y_global']
+    map_x = int(np.round(sensor_data['x_global']/res_pos))
+    map_y = int(np.round(sensor_data['y_global']/res_pos))
+    map = occupancy_map(sensor_data)
+
+    if mode == 0: # Reach target area
+        control_command = [0.0, 0.0, height_desired, 0.0]
+        
+        if pos_x>3.5:
+            print("Landing Zone reached")
+            mode = 1
+            return control_command
+        
+        if all(map[map_x+1, map_y+i] >= 0 for i in range(-1, 2)) \
+           and all(map[map_x+2, map_y+i] >= 0 for i in range(-1, 2)):
+            control_command[0]=0.3
+            print(map[map_x+2, map_y-1], \
+                  map[map_x+2, map_y], \
+                  map[map_x+2, map_y+1])
+            
+            print(map[map_x+1, map_y-1], \
+                  map[map_x+1, map_y], \
+                  map[map_x+1, map_y+1])
+            print()
+
+        if pos_y < 1.4 and map[map_x, map_y+1] >= 0:  # go to center of map
+            control_command[1] = 0.3
+        if pos_y > 1.6 and map[map_x, map_y-1] >= 0: # go to center of map
+            control_command[1] = -0.3
+
+        # override basic control if theres an obstacle
+        if control_command[0] == 0.0 and pos_y > 1.2 and pos_y < 1.8:
+            if map[map_x, map_y+1] >= 0:
+                control_command[1] = 0.3
+            else:
+                control_command[1] = -0.3
+
+    elif mode == 1: # Find target pad
+        control_command = [0.0, 0.0, height_desired, 0.0]
+    elif mode == 2: # Land on target pad
+        control_command = [0.0, 0.0, height_desired, 0.0]
+    elif mode == 3: # Leave landing pad
+        control_command = [0.0, 0.0, height_desired, 0.0]
+    elif mode == 4: # Fly to start pad
+        control_command = [0.0, 0.0, height_desired, 0.0]
+    elif mode == 5: # Land on start pad
+        control_command = [0.0, 0.0, height_desired, 0.0]
+
     return control_command # Ordered as array with: [v_forward_cmd, v_left_cmd, alt_cmd, yaw_rate_cmd]
 
 
 # Occupancy map based on distance sensor
 min_x, max_x = 0, 5.0 # meter
-min_y, max_y = 0, 5.0 # meter
+# min_y, max_y = 0, 5.0 # meter ### only 3 m in width?
+min_y, max_y = 0, 3.0 # meter
 range_max = 2.0 # meter, maximum range of distance sensor
 res_pos = 0.2 # meter
 conf = 0.2 # certainty given by each measurement
@@ -94,7 +149,7 @@ def occupancy_map(sensor_data):
     map = np.clip(map, -1, 1) # certainty can never be more than 100%
 
     # only plot every Nth time step (comment out if not needed)
-    if t % 50 == 0:
+    if t % 150 == 0:
         plt.imshow(np.flip(map,1), vmin=-1, vmax=1, cmap='gray', origin='lower') # flip the map to match the coordinate system
         plt.savefig("map.png")
         plt.close()
