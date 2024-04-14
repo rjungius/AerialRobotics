@@ -2,15 +2,18 @@
 
 import numpy as np
 from controller import Supervisor, Keyboard
-from control import quadrotor_controller
+from control import quadrotor_controller_setpoint, quadrotor_controller_command
 from kalman_filter import kalman_filter as KF
 import utils
 from scipy.spatial.transform import Rotation as R
-import example
+import my_control
 import time, random
+import cv2
 
-exp_num = 2                         # 0: Coordinate Transformation, 1: PID Tuning, 2: Kalman Filter, 3: Practical
-control_style = 'path_planner'      # 'keyboard' or 'path_planner
+exp_num = 3                     # 0: Coordinate Transformation, 1: PID Tuning, 2: Kalman Filter, 3: Practical
+control_style = 'autonomous'      # 'keyboard' or 'autonomous'
+
+path_around_arena = [[0.0, 0.0, 1.0, 0.0], [0.0, 3.0, 1.25, np.pi/2], [5.0, 3.0, 1.5, np.pi], [5.0, 0.0, 0.25, 1.5*np.pi], [0.0, 0.0, 1.0, 0.0]]
 
 # Crazyflie drone class in webots
 class CrazyflieInDroneDome(Supervisor):
@@ -82,7 +85,8 @@ class CrazyflieInDroneDome(Supervisor):
         self.laser_down.enable(self.timestep)
         
         # Crazyflie velocity PID controller
-        self.PID_CF = quadrotor_controller()
+        self.PID_SP = quadrotor_controller_setpoint()
+        self.PID_CM = quadrotor_controller_command()
         self.PID_update_last_time = self.getTime()
         self.sensor_read_last_time = self.getTime()
         self.step_count = 0
@@ -107,16 +111,16 @@ class CrazyflieInDroneDome(Supervisor):
         # rotation_field = drone.getField('rotation')
         # rotation_field.setSFRotation([0, 0, 1, init_yaw_drone])
 
-        # Simulation step update
-        super().step(self.timestep)
-
         # For the assignment, randomise the positions of the drone, obstacles, goal, take-off pad and landing pad 
         if exp_num == 3:
 
             # Variables to track progress
+            self.reached_landing_zone = False
             self.reached_landing_pad = False
             self.reached_goal_first = False
             self.reached_goal_second = False
+            self.reached_takeoff_zone = False
+            self.returned_to_takeoff_pad = False
                 
             # Set random initial position of the drone
             init_x_drone, init_y_drone = random.uniform(0.3, 1.2), random.uniform(0.3, 2.7)
@@ -128,6 +132,7 @@ class CrazyflieInDroneDome(Supervisor):
             take_off_pad = super().getFromDef('TAKE_OFF_PAD')
             translation_field = take_off_pad.getField('translation')
             translation_field.setSFVec3f([init_x_drone, init_y_drone, 0.05])
+            self.take_off_pad_position = [init_x_drone, init_y_drone]
 
             # Set random initial position of the landing pad
             self.landing_pad_position = [random.uniform(3.8, 4.7), random.uniform(0.3, 2.7)]
@@ -136,12 +141,12 @@ class CrazyflieInDroneDome(Supervisor):
             translation_field.setSFVec3f([self.landing_pad_position[0], self.landing_pad_position[1], 0.05])
 
             # Set random initial position of the Goal
-            self.goal_position = [random.uniform(2.3, 2.7), random.uniform(0.3, 2.7), random.uniform(0.8,1.4)]
+            self.goal_position = [random.uniform(2.3, 2.7), random.uniform(0.3, 2.7), random.uniform(0.4,1.3)]
             goal = super().getFromDef('GOAL')
             translation_field = goal.getField('translation')
             translation_field.setSFVec3f(self.goal_position)
 
-            # TODO: Do this properly using the supervisor
+            # Set Goal dimensions
             self.goal_height = 0.4
             self.goal_width = 0.4
             self.goal_depth = 0.1    
@@ -170,6 +175,14 @@ class CrazyflieInDroneDome(Supervisor):
                 translation_field.setSFVec3f([new_init_x_obs, new_init_y_obs, 0.74])
                 existed_points.append([new_init_x_obs, new_init_y_obs])
 
+
+            # # Start an OpenCV window to display the camera feed
+            # cv2.startWindowThread()
+            # cv2.namedWindow("Camera Feed")
+
+        # Simulation step update
+        super().step(self.timestep)
+
     def wait_keyboard(self):
         while self.keyboard.getKey() != ord('Y'):
             super().step(self.timestep)
@@ -178,7 +191,7 @@ class CrazyflieInDroneDome(Supervisor):
         forward_velocity = 0.0
         left_velocity = 0.0
         yaw_rate = 0.0
-        altitude = 1
+        z_reference = 0.75
         key = self.keyboard.getKey()
         while key > 0:
             if key == ord('W'):
@@ -193,8 +206,12 @@ class CrazyflieInDroneDome(Supervisor):
                 yaw_rate = 1.0
             elif key == ord('E'):
                 yaw_rate = -1.0
+            elif key == ord('V'):
+                z_reference = 1.5
+            elif key == ord('C'):
+                z_reference = 0.0
             key = self.keyboard.getKey()
-        return [forward_velocity, left_velocity, altitude, yaw_rate]
+        return [forward_velocity, left_velocity, z_reference, yaw_rate]
 
     def read_KF_estimates(self):
         
@@ -276,6 +293,35 @@ class CrazyflieInDroneDome(Supervisor):
     
     def read_sensors(self):
         
+        # Sensor data call values
+        # "x_global": Global X position
+        # "y_global": Global Y position
+        # "z_global": Global Z position
+        # "roll": Roll angle (rad)
+        # "pitch": Pitch angle (rad)
+        # "yaw": Yaw angle (rad)
+        # "q_x": Quaternion x value
+        # "q_y": Quaternion y value
+        # "q_z": Quaternion z value
+        # "q_w": Quaternion w value
+        # "v_x": Global X velocity
+        # "v_y": Global Y velocity
+        # "v_z": Global Z velocity
+        # "v_forward": Forward velocity (body frame)
+        # "v_left": Leftward velocity (body frame)
+        # "v_down": Downward velocity (body frame)
+        # "ax_global": Global X acceleration
+        # "ay_global": Global Y acceleration
+        # "az_global": Global Z acceleration
+        # "range_front": Front range finder distance
+        # "range_down": Downward range finder distance
+        # "range_left": Leftward range finder distance 
+        # "range_back": Backward range finder distance
+        # "range_right": Rightward range finder distance
+        # "rate_roll": Roll rate (rad/s)
+        # "rate_pitch": Pitch rate (rad/s)
+        # "rate_yaw": Yaw rate (rad/s)
+
         # Data dictionary
         data = {}
 
@@ -356,19 +402,51 @@ class CrazyflieInDroneDome(Supervisor):
 
         return data
 
+    # Read the camera feed
+    def read_camera(self):
+
+        # Read the camera image in BRGA format
+        camera_image = self.camera.getImage()
+
+        # Convert the image to a numpy array for OpenCV
+        image = np.frombuffer(camera_image, np.uint8).reshape((self.camera.getHeight(), self.camera.getWidth(), 4))
+
+        return image
+
+    
     # Create a function to detect if the drone has reached the landing pad, if it has set the GOAL object to be transparent
-    def check_landing_pad(self, sensor_data):
+    def check_landing_pads(self, sensor_data):
         
         drone_position = [sensor_data['x_global'], sensor_data['y_global'], sensor_data['range_down']]
-
-        distance = np.linalg.norm([drone_position[0] - self.landing_pad_position[0], drone_position[1] - self.landing_pad_position[1], drone_position[2]])
-        if distance < 0.16 and not self.reached_landing_pad:
+        
+        # Check if the drone is in the landing zone
+        if drone_position[0] > 3.5 and drone_position[0] < 5.0 and drone_position[1] > 0.0 and drone_position[1] < 3.0 and not self.reached_landing_zone:
+            print("Congratulations! You have reached the landing zone, now find the landing pad.")
+            self.reached_landing_zone = True
+        
+        
+        # Check if the drone has reached the landing pad
+        landing_pad_distance = np.linalg.norm([drone_position[0] - self.landing_pad_position[0], drone_position[1] - self.landing_pad_position[1], drone_position[2] - 0.1])
+        if landing_pad_distance < 0.16 and not self.reached_landing_pad:
             goal_node = super().getFromDef('GOAL')
             cam_node = super().getFromDef('CF_CAMERA')
             goal_node.setVisibility(cam_node, 0)
             print("Congratulations! You have reached the landing pad, the goal is now hidden.")
             self.reached_landing_pad = True
 
+        
+        if drone_position[0] > 0.0 and drone_position[0] < 1.5 and drone_position[1] > 0.0 and drone_position[1] < 3.0 and not self.reached_takeoff_zone and self.reached_landing_zone:
+            print("Congratulations! You have made it back to the takeoff zone, now find the takeoff pad.")
+            self.reached_takeoff_zone = True
+        
+        # Check if the drone has made it back to the takeoff pad after reaching the landing pad
+        if self.reached_landing_zone and not self.returned_to_takeoff_pad:
+            take_off_pad_distance = np.linalg.norm([drone_position[0] - self.take_off_pad_position[0], drone_position[1] - self.take_off_pad_position[1], drone_position[2] - 0.1])
+            if take_off_pad_distance < 0.16:
+                print("Congratulations! You have made it back to the takeoff pad.")
+                self.returned_to_takeoff_pad = True     
+
+    
     # Create a function to detect if the drone has reached the goal
     def check_goal(self, sensor_data):
 
@@ -378,8 +456,8 @@ class CrazyflieInDroneDome(Supervisor):
         goal_x_min = self.goal_position[0] - self.goal_width / 2
         goal_x_max = self.goal_position[0] + self.goal_width / 2
 
-        goal_y_min = self.goal_position[1] - self.goal_depth / 2
-        goal_y_max = self.goal_position[1] + self.goal_depth / 2
+        goal_y_min = self.goal_position[1] - self.goal_depth
+        goal_y_max = self.goal_position[1] + self.goal_depth
 
         goal_z_min = self.goal_position[2] - self.goal_height / 2
         goal_z_max = self.goal_position[2] + self.goal_height / 2
@@ -401,36 +479,20 @@ class CrazyflieInDroneDome(Supervisor):
         self.simulationReset()
         super().step(self.timestep)
 
-    def step(self, setpoint, sensor_data):
-        
-        dt_ctrl = self.getTime() - self.PID_update_last_time
-        # Time interval for PID control
-        self.PID_update_last_time = self.getTime()
-        # Low-level PID velocity control with fixed height
-        motorPower = self.PID_CF.pid(dt_ctrl, setpoint, sensor_data)
-            
-        # Update motor command
-        self.m1_motor.setVelocity(-motorPower[0])
-        self.m2_motor.setVelocity(motorPower[1])
-        self.m3_motor.setVelocity(-motorPower[2])
-        self.m4_motor.setVelocity(motorPower[3])
-        
-
-        # Update drone states in simulation
+    def step_physics(self):
         super().step(self.timestep)
-
 
     def step_KF(self, KF_data):
 
         self.dt_ctrl = self.getTime() - self.PID_update_last_time
 
         if np.round(self.dt_ctrl,3) >= self.ctrl_update_period/1000:
-
-            pp_cmds = example.path_planning(KF_data, self.dt_ctrl)
+            
+            pp_cmds = my_control.path_to_setpoint(path_around_arena, KF_data, self.dt_ctrl)
 
             self.PID_update_last_time = self.getTime()
             # Low-level PID velocity control with fixed height
-            motorPower = self.PID_CF.pid(self.dt_ctrl, pp_cmds, KF_data)
+            motorPower = self.PID_SP.pid(self.dt_ctrl, pp_cmds, KF_data)
         
             # Update motor command
             self.m1_motor.setVelocity(-motorPower[0])
@@ -449,14 +511,14 @@ if __name__ == '__main__':
 
     # Initialize the drone
     drone = CrazyflieInDroneDome()
-    assert control_style in ['keyboard','path_planner'], "Variable control_style must either be 'keyboard' or 'path_planner'"
+    assert control_style in ['keyboard','autonomous'], "Variable control_style must either be 'keyboard' or 'autonomous'"
     assert exp_num in [0,1,2,3], "Exp_num must be a value between 0 and 3"
 
     # Simulation loops
     for step in range(100000):
-        
+        # Default path around the arena
         if exp_num == 2:
-            assert control_style == 'path_planner', "Variable control_style must be set to path planner for this exercise"
+            assert control_style == 'autonomous', "Variable control_style must be set to 'autonomous' for this exercise"
             state_data = drone.read_KF_estimates()
             # Update the drone status in simulation with KF
             drone.step_KF(state_data)
@@ -464,37 +526,37 @@ if __name__ == '__main__':
         else:
             # Read sensor data including []
             sensor_data = drone.read_sensors()
+            camera_data = drone.read_camera()
             dt_ctrl = drone.getTime() - drone.PID_update_last_time
+
+            if exp_num == 3:
+                drone.check_landing_pads(sensor_data)
+                drone.check_goal(sensor_data)
+                control_commands = my_control.get_command(sensor_data, camera_data, dt_ctrl)
+            else:
+                setpoint = my_control.path_to_setpoint(path_around_arena,sensor_data,dt_ctrl)
 
             if control_style == 'keyboard':
                 control_commands = drone.action_from_keyboard(sensor_data)
 
-                euler_angles = [sensor_data['roll'], sensor_data['pitch'], sensor_data['yaw']]
-                quaternion = [sensor_data['q_x'], sensor_data['q_y'], sensor_data['q_z'], sensor_data['q_w']]
-                control_commands = utils.rot_body2inertial(control_commands, euler_angles, quaternion)
-
-                set_x = sensor_data['x_global'] + control_commands[0]
-                set_y = sensor_data['y_global'] + control_commands[1]
-                set_alt = control_commands[2]
-                set_yaw = sensor_data['yaw'] + control_commands[3]
-                
-                setpoint = [set_x, set_y, set_alt, set_yaw]
-            elif control_style == 'path_planner':
-                setpoint = example.path_planning(sensor_data,dt_ctrl)
-
-            if exp_num == 3:
-                # For the PROJECT CHANGE YOUR CODE HERE
-                # Example Path planner call
-                setpoint = example.path_planning(sensor_data,dt_ctrl)
-                drone.check_landing_pad(sensor_data)
-                # Check if the drone has reached the goal
-                drone.check_goal(sensor_data)
-
             # Update the drone status in simulation
-            drone.step(setpoint, sensor_data)
+            dt_ctrl = drone.getTime() - drone.PID_update_last_time
+            # Time interval for PID control
+            drone.PID_update_last_time = drone.getTime()
+            # Low-level PID velocity control with fixed height
+            if exp_num != 3:
+                motorPower = drone.PID_SP.pid(dt_ctrl, setpoint, sensor_data)
+            else:
+                motorPower = drone.PID_CM.pid(dt_ctrl, control_commands, sensor_data)
+                
+            # Update motor command
+            drone.m1_motor.setVelocity(-motorPower[0])
+            drone.m2_motor.setVelocity(motorPower[1])
+            drone.m3_motor.setVelocity(-motorPower[2])
+            drone.m4_motor.setVelocity(motorPower[3])
+            
+            drone.step_physics()
 
-        # control_commands = example.obstacle_avoidance(sensor_data)
-        # map = example.occupancy_map(sensor_data)
         # ---- end --- #
 
 
