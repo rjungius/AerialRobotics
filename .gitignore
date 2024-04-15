@@ -132,3 +132,5 @@ dmypy.json
 
 # Occupancy map
 map.png
+
+docs/exercise_2/*.png
