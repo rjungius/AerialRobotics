@@ -58,8 +58,8 @@ def get_command(sensor_data, camera_data, dt):
     cord_to_pos = lambda x: x*res_pos + res_pos/2
  
     if mode == None: 
-        mode = -1
-        Kp, Ki, Kd = 2, 0, 0.2
+        mode = 0
+        Kp, Ki, Kd = 1, 0, 0.2
         pid_vel_x = PIDController(Kp, Ki, Kd, startpos[0], 0.3)
         pid_vel_y = PIDController(Kp, Ki, Kd, startpos[1], 0.3)
         pid_yaw = PIDController(Kp, Ki, Kd, 0, 0.7)
@@ -102,46 +102,47 @@ def get_command(sensor_data, camera_data, dt):
         tar_y = 1.5
         tol = 0.01
         yaw_scan = np.pi/2
-        horizon = 4
+        horizon = 2
+        drone_width = 0.15
+        front_blocked = False
+        right_blocked = False
 
-        # pid_yaw.update_setpoint(0)
-        # pid_vel_x.update_setpoint(min(pos_x+sensor_data['range_front']-0.2, tar_x))
-        pid_vel_x.update_setpoint(tar_x)
+        if pos_x>3.5:
+            print("Landing Zone reached")
+            mode = 1
+            return control_command
 
-        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "front", 0.2, horizon):
+        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "front", drone_width, horizon):
             print("front path blocked")
             pid_vel_x.update_setpoint(pos_x)
+            front_blocked = True
         else:
-            print("front path free")
-        # print(pid_vel_x.setpoint)
+            pid_vel_x.update_setpoint(tar_x)
 
-
-        # tmp_y = pos_y # try to go towards mid of map unless object
-        # if sensor_data['range_left'] < 0.2:
-        #     tmp_y -= (0.2 - sensor_data["range_left"])
-        # elif sensor_data['range_right'] < 0.2:
-        #     tmp_y += (0.2 - sensor_data["range_right"])
-        # else:
-        #     tmp_y = tar_y
-        # pid_vel_y.update_setpoint(tmp_y)
         pid_vel_y.update_setpoint(tar_y)
 
-        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "right", 0.2, horizon):
+        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "right", drone_width, horizon):
             print("right path blocked")
-            pid_vel_y.update_setpoint(pos_y)
+            pid_vel_y.update_setpoint(pos_y+1)
+            # right_blocked = True
         else:
-            print("right path free")
-        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "left", 0.2, horizon):
+            if front_blocked and pos_y > 0.7:
+                pid_vel_y.update_setpoint(pos_y-1)
+        
+        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "left", drone_width, horizon):
             print("left path blocked")
-            pid_vel_y.update_setpoint(pos_y)
+            pid_vel_y.update_setpoint(pos_y-1)
         else:
-            print("left path free")
-        print("\n")
-
+            if front_blocked and pos_y < 2.3: # only override right-evade when close to left border
+                # if right_blocked:
+                    # print("not going right")
+                    # pid_vel_y.update_setpoint(pos_y+1)
+                pid_vel_y.update_setpoint(pos_y+1)
+ 
         # some yaw-trying-stuff for scanning
         # print(pid_yaw.setpoint, pid_yaw.prev_error)
         if pid_yaw.setpoint==0:
-            pid_yaw.max_vel = 0.5
+            pid_yaw.max_vel = 1
             pid_yaw.update_setpoint(yaw_scan)
         if abs(pid_yaw.prev_error) < 0.01:
             if pid_yaw.setpoint == yaw_scan:
@@ -160,10 +161,6 @@ def get_command(sensor_data, camera_data, dt):
 
         return control_command
 
-        if pos_x>3.5:
-            print("Landing Zone reached")
-            mode = 1
-            return control_command
         
         if next_cell == None:
             update_graph(graph, map)
