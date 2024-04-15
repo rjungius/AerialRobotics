@@ -13,7 +13,11 @@ startpos = None
 timer_done = None
 mode = None
 graph = None
-evade = None
+next_cell = None
+pid_vel_x = None
+pid_vel_y = None
+pid_z = None
+pid_yaw = None
 
 # The available ground truth state measurements can be accessed by calling sensor_data[item]. All values of "item" are provided as defined in main.py lines 296-323. 
 # The "item" values that you can later use in the hardware project are:
@@ -28,7 +32,7 @@ evade = None
 
 # This is the main function where you will implement your control algorithm
 def get_command(sensor_data, camera_data, dt):
-    global on_ground, startpos, mode, graph, evade
+    global on_ground, startpos, mode, graph, next_cell, pid_vel_x, pid_vel_y, pid_z, pid_yaw
 
     # Open a window to display the camera image
     # NOTE: Displaying the camera image will slow down the simulation, this is just for testing
@@ -38,8 +42,8 @@ def get_command(sensor_data, camera_data, dt):
     # Take off
     if startpos is None:
         startpos = [sensor_data['x_global'], sensor_data['y_global'], sensor_data['range_down']]   
-        print(startpos)
-        print(int(startpos[0]/res_pos), int(startpos[1]/res_pos), int(startpos[2]/res_pos))
+        print(f'startpos: {startpos}')
+        print(int(np.round(startpos[0]/res_pos)), int(np.round(startpos[1]/res_pos)))
     if on_ground and sensor_data['range_down'] < 0.49:
         control_command = [0.0, 0.0, height_desired, 0.0]
         return control_command
@@ -47,55 +51,148 @@ def get_command(sensor_data, camera_data, dt):
         if on_ground:
             print(sensor_data['x_global'], sensor_data['y_global'])
             print(int(sensor_data['x_global']/res_pos), int(sensor_data['y_global']/res_pos))
-        on_ground = False
+            on_ground = False
 
     # ---- YOUR CODE HERE ----
+    pos_to_cord = lambda x: int(np.round(x/res_pos))
+    cord_to_pos = lambda x: x*res_pos + res_pos/2
+ 
     if mode == None: 
-        mode = 0
+        mode = -1
+        Kp, Ki, Kd = 2, 0, 0.2
+        pid_vel_x = PIDController(Kp, Ki, Kd, startpos[0], 0.3)
+        pid_vel_y = PIDController(Kp, Ki, Kd, startpos[1], 0.3)
+        pid_yaw = PIDController(Kp, Ki, Kd, 0, 0.7)
     if graph == None:
         graph = nx.grid_2d_graph(int(5/res_pos), int(3/res_pos))
         for u,v in graph.edges():
             graph[u][v]["weight"] = 1
     
+    # print(dt)
+
     pos_x = sensor_data['x_global']
     pos_y = sensor_data['y_global']
-    idx_x = int(np.round((pos_x)/res_pos,0))
-    idx_y = int(np.round((pos_y)/res_pos,0))
+    yaw = sensor_data['yaw']
+    idx_x = pos_to_cord(pos_x)
+    idx_y = pos_to_cord(pos_y)
     map = occupancy_map(sensor_data)
     
-    if mode == 0: # Reach target area
-        control_command = [0.0, 0.0, height_desired, 0]
+    control_command = [0, 0, height_desired, 0]
+    
+    if mode == -1: #stabilize on startpad for testing:
+        # print(startpos[0]-pos_x, startpos[1]-pos_y, yaw)
         
+        control_command[0] = pid_vel_x.update(pos_x)
+        control_command[1] = pid_vel_y.update(pos_y)
+        control_command[2] = height_desired
+        control_command[3] = pid_yaw.update(yaw)
+
+        mode = 0
+        for i in control_command:
+            if i == height_desired:
+                continue
+            if i > 0.001:
+                mode = -1
+        if mode == 0:
+            print("start pos reached")
+        return control_command
+    
+    if mode == 0: # Reach target area
+        tar_x = 4
+        tar_y = 1.5
+        tol = 0.01
+        yaw_scan = 1
+
+        # pid_yaw.update_setpoint(0)
+        pid_vel_x.update_setpoint(min(pos_x+sensor_data['range_front']-0.2, tar_x))
+
+        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "front", 0.2, 4):
+            print("front path blocked")
+            pid_vel_x.update_setpoint(pos_x-0.1)
+        else:
+            print("front path free")
+            # print(pid_vel_x.setpoint)
+
+
+        tmp_y = pos_y # try to go towards mid of map unless object
+        if sensor_data['range_left'] < 0.2:
+            tmp_y -= (0.2 - sensor_data["range_left"])
+        elif sensor_data['range_right'] < 0.2:
+            tmp_y += (0.2 - sensor_data["range_right"])
+        else:
+            tmp_y = tar_y
+        pid_vel_y.update_setpoint(tmp_y)
+        
+        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "right", 0.2, 4):
+            print("right path blocked")
+            pid_vel_x.update_setpoint(pos_y+0.2)
+        else:
+            print("right path free")
+        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "left", 0.2, 4):
+            print("left path blocked")
+            pid_vel_x.update_setpoint(pos_y-0.2)
+        else:
+            print("left path free")
+        print("\n")
+
+        # some yaw-trying-stuff for scanning
+        # print(pid_yaw.setpoint, pid_yaw.prev_error)
+        if pid_yaw.setpoint==0:
+            pid_yaw.max_vel = 0.3
+            pid_yaw.update_setpoint(yaw_scan)
+        if abs(pid_yaw.prev_error) < 0.01:
+            if pid_yaw.setpoint == yaw_scan:
+                pid_yaw.update_setpoint(-yaw_scan)
+            else:
+                pid_yaw.update_setpoint(yaw_scan)
+        
+
+        d_x = pid_vel_x.update(pos_x)
+        d_y = pid_vel_y.update(pos_y)
+
+        control_command[0] = d_x * np.cos(yaw) + d_y * np.sin(yaw)
+        control_command[1] = -d_x * np.sin(yaw) + d_y * np.cos(yaw)
+        control_command[2] = height_desired
+        control_command[3] = pid_yaw.update(yaw)
+
+        return control_command
+
         if pos_x>3.5:
             print("Landing Zone reached")
             mode = 1
             return control_command
         
-        if evade == None:
-            if sensor_data['range_front'] > 0.3 and map[idx_x+1, idx_y]:
-                control_command[0]=0.3
-            else: #decide to turn either left or right, and then evade until front is free
-                if pos_y < 1.5 and sensor_data["range_left"] > 0.4:
-                    evade = "left"
-                else:
-                    if sensor_data["range_right"] > 0.4:
-                        evade = "right"
-                    else:
-                        evade = "left"
-        
-        if sensor_data["range_left"] < 0.2:
-            control_command[1] = -0.3
-        if sensor_data["range_right"] < 0.2:
-            control_command[1] = 0.3
+        if next_cell == None:
+            update_graph(graph, map)
+            target = (pos_to_cord(tar_x), pos_to_cord(tar_y))
+            path = nx.astar_path(graph, (idx_x, idx_y), target)
+            next_cell = path[1]
+            # print(path)
+            # next_cell = (pos_to_cord(startpos[0])+2, pos_to_cord(startpos[1]))
 
-        if evade == "left":
-            control_command[1] = 0.3
-            if sensor_data["range_front"] > 0.4:
-                evade = None
-        if evade == "right":
-            control_command[1] = -0.3
-            if sensor_data["range_front"] > 0.4:
-                evade = None
+            pid_vel_x.update_setpoint(cord_to_pos(next_cell[0]))
+            pid_vel_y.update_setpoint(cord_to_pos(next_cell[1]))
+            print(f'next target: {next_cell}')
+
+        control_command[0] = pid_vel_x.update(pos_x)
+        control_command[1] = pid_vel_y.update(pos_y)
+        control_command[3] = pid_yaw.update(yaw)
+        if abs(control_command[0]) < tol and abs(control_command[1]) < tol:
+            next_cell = None
+
+        if sensor_data["range_front"] < 0.2: # local avoidance
+            control_command[0] = -0.2
+            next_cell = None
+
+        if sensor_data["range_left"] < 0.2:
+            control_command[1] = -0.2
+            next_cell = None
+
+        if sensor_data["range_right"] < 0.2:
+            control_command[1] = 0.2
+            next_cell = None
+
+        # print(control_command)
 
     elif mode == 1: # Find target pad
         control_command = [0.0, 0.0, height_desired, 0.0]
@@ -116,7 +213,7 @@ min_x, max_x = 0, 5.0 # meter
 # min_y, max_y = 0, 5.0 # meter ### only 3 m in width?
 min_y, max_y = 0, 3.0 # meter
 range_max = 2.0 # meter, maximum range of distance sensor
-res_pos = 0.2 # meter
+res_pos = 0.1 # meter
 conf = 0.2 # certainty given by each measurement
 t = 0 # only for plotting
 
@@ -174,9 +271,72 @@ def update_graph(graph, map):
             if map[i][j] < -0.3 and graph.has_node((i,j)):
                 graph.remove_node((i,j))
 
+def check_occupancy(map, coord_x, coord_y, direction, drone_width, search_horizon):
+    check_breadth = int(drone_width/2/res_pos)
+    
+    if direction == "left":
+        for i in range(coord_x-check_breadth, coord_y+check_breadth+1):
+            for j in range(coord_y+check_breadth +1, coord_y+search_horizon*check_breadth):
+                try:
+                    if map[i][j] < 0: #if unknown, wait for further data by wiggeling
+                        return True
+                except:
+                    continue #field out of bounds so free
+    
+    if direction == "front":
+        for i in range(coord_x+check_breadth+1, coord_x+search_horizon*check_breadth):
+            for j in range(coord_y-check_breadth, coord_y+check_breadth+1):
+                try:
+                    if map[i][j] < 0: #if unknown, wait for further data by wiggeling
+                        return True
+                except:
+                    continue #field out of bounds so free
+    
+    if direction == "right":
+        for i in range(coord_x-check_breadth, coord_y+check_breadth+1):
+            for j in range(coord_y-search_horizon*check_breadth, coord_y-check_breadth):
+                try:
+                    if map[i][j] < 0: #if unknown, wait for further data by wiggeling
+                        return True
+                except:
+                    continue #field out of bounds so free
+    return False
 
+class PIDController:
+    def __init__(self, Kp, Ki, Kd, setpoint, max_vel):
+        self.Kp = Kp
+        self.Ki = Ki
+        self.Kd = Kd
+        self.setpoint = setpoint
+        self.max_vel = max_vel
+        
+        self.prev_error = 0
+        self.integral = 0
+        
+    def update(self, feedback_value):
+        error = self.setpoint - feedback_value
+        
+        # Proportional term
+        P = self.Kp * error
+        
+        # Integral term
+        self.integral += error
+        I = self.Ki * self.integral
+        
+        # Derivative term
+        D = self.Kd * (error - self.prev_error)
+        
+        # PID output
+        output = P + I + D
+        # print(output)
+        
+        # Update previous error
+        self.prev_error = error
+        
+        return max(min(output, self.max_vel), -self.max_vel)
 
-
+    def update_setpoint(self, setpoint):
+        self.setpoint = setpoint
 
 
 
