@@ -105,7 +105,6 @@ def get_command(sensor_data, camera_data, dt):
         horizon = 2
         drone_width = 0.15
         front_blocked = False
-        right_blocked = False
 
         if pos_x>3.5:
             print("Landing Zone reached")
@@ -113,7 +112,7 @@ def get_command(sensor_data, camera_data, dt):
             return control_command
 
         if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "front", drone_width, horizon):
-            print("front path blocked")
+            # print("front path blocked")
             pid_vel_x.update_setpoint(pos_x)
             front_blocked = True
         else:
@@ -122,25 +121,20 @@ def get_command(sensor_data, camera_data, dt):
         pid_vel_y.update_setpoint(tar_y)
 
         if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "right", drone_width, horizon):
-            print("right path blocked")
+            # print("right path blocked")
             pid_vel_y.update_setpoint(pos_y+1)
-            # right_blocked = True
         else:
-            if front_blocked and pos_y > 0.7:
+            if front_blocked and pos_y > 0.5:
                 pid_vel_y.update_setpoint(pos_y-1)
         
         if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "left", drone_width, horizon):
-            print("left path blocked")
+            # print("left path blocked")
             pid_vel_y.update_setpoint(pos_y-1)
         else:
-            if front_blocked and pos_y < 2.3: # only override right-evade when close to left border
-                # if right_blocked:
-                    # print("not going right")
-                    # pid_vel_y.update_setpoint(pos_y+1)
+            if front_blocked and pos_y < 2.7: # only override right-evade when close to left border
                 pid_vel_y.update_setpoint(pos_y+1)
  
         # some yaw-trying-stuff for scanning
-        # print(pid_yaw.setpoint, pid_yaw.prev_error)
         if pid_yaw.setpoint==0:
             pid_yaw.max_vel = 1
             pid_yaw.update_setpoint(yaw_scan)
