@@ -101,36 +101,39 @@ def get_command(sensor_data, camera_data, dt):
         tar_x = 4
         tar_y = 1.5
         tol = 0.01
-        yaw_scan = 1
+        yaw_scan = np.pi/2
+        horizon = 4
 
         # pid_yaw.update_setpoint(0)
-        pid_vel_x.update_setpoint(min(pos_x+sensor_data['range_front']-0.2, tar_x))
+        # pid_vel_x.update_setpoint(min(pos_x+sensor_data['range_front']-0.2, tar_x))
+        pid_vel_x.update_setpoint(tar_x)
 
-        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "front", 0.2, 4):
+        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "front", 0.2, horizon):
             print("front path blocked")
-            pid_vel_x.update_setpoint(pos_x-0.1)
+            pid_vel_x.update_setpoint(pos_x)
         else:
             print("front path free")
-            # print(pid_vel_x.setpoint)
+        # print(pid_vel_x.setpoint)
 
 
-        tmp_y = pos_y # try to go towards mid of map unless object
-        if sensor_data['range_left'] < 0.2:
-            tmp_y -= (0.2 - sensor_data["range_left"])
-        elif sensor_data['range_right'] < 0.2:
-            tmp_y += (0.2 - sensor_data["range_right"])
-        else:
-            tmp_y = tar_y
-        pid_vel_y.update_setpoint(tmp_y)
-        
-        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "right", 0.2, 4):
+        # tmp_y = pos_y # try to go towards mid of map unless object
+        # if sensor_data['range_left'] < 0.2:
+        #     tmp_y -= (0.2 - sensor_data["range_left"])
+        # elif sensor_data['range_right'] < 0.2:
+        #     tmp_y += (0.2 - sensor_data["range_right"])
+        # else:
+        #     tmp_y = tar_y
+        # pid_vel_y.update_setpoint(tmp_y)
+        pid_vel_y.update_setpoint(tar_y)
+
+        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "right", 0.2, horizon):
             print("right path blocked")
-            pid_vel_x.update_setpoint(pos_y+0.2)
+            pid_vel_y.update_setpoint(pos_y)
         else:
             print("right path free")
-        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "left", 0.2, 4):
+        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "left", 0.2, horizon):
             print("left path blocked")
-            pid_vel_x.update_setpoint(pos_y-0.2)
+            pid_vel_y.update_setpoint(pos_y)
         else:
             print("left path free")
         print("\n")
@@ -138,7 +141,7 @@ def get_command(sensor_data, camera_data, dt):
         # some yaw-trying-stuff for scanning
         # print(pid_yaw.setpoint, pid_yaw.prev_error)
         if pid_yaw.setpoint==0:
-            pid_yaw.max_vel = 0.3
+            pid_yaw.max_vel = 0.5
             pid_yaw.update_setpoint(yaw_scan)
         if abs(pid_yaw.prev_error) < 0.01:
             if pid_yaw.setpoint == yaw_scan:
@@ -213,7 +216,7 @@ min_x, max_x = 0, 5.0 # meter
 # min_y, max_y = 0, 5.0 # meter ### only 3 m in width?
 min_y, max_y = 0, 3.0 # meter
 range_max = 2.0 # meter, maximum range of distance sensor
-res_pos = 0.1 # meter
+res_pos = 0.05 # meter
 conf = 0.2 # certainty given by each measurement
 t = 0 # only for plotting
 
@@ -272,31 +275,31 @@ def update_graph(graph, map):
                 graph.remove_node((i,j))
 
 def check_occupancy(map, coord_x, coord_y, direction, drone_width, search_horizon):
-    check_breadth = int(drone_width/2/res_pos)
+    check_breadth = int(drone_width/res_pos/2)+1 # +1 to account for rounding
     
-    if direction == "left":
-        for i in range(coord_x-check_breadth, coord_y+check_breadth+1):
-            for j in range(coord_y+check_breadth +1, coord_y+search_horizon*check_breadth):
+    if direction == "front":
+        for i in range(coord_x+check_breadth+1, coord_x+(search_horizon+1)*check_breadth):
+            for j in range(coord_y-check_breadth, coord_y+check_breadth+1):
                 try:
-                    if map[i][j] < 0: #if unknown, wait for further data by wiggeling
+                    if map[i][j] <= 0: #if unknown, wait for further data by wiggeling
                         return True
                 except:
                     continue #field out of bounds so free
     
-    if direction == "front":
-        for i in range(coord_x+check_breadth+1, coord_x+search_horizon*check_breadth):
-            for j in range(coord_y-check_breadth, coord_y+check_breadth+1):
+    if direction == "left":
+        for i in range(coord_x-check_breadth, coord_x+check_breadth+1):
+            for j in range(coord_y+check_breadth +1, coord_y+(search_horizon+1)*check_breadth):
                 try:
-                    if map[i][j] < 0: #if unknown, wait for further data by wiggeling
+                    if map[i][j] <= 0: #if unknown, wait for further data by wiggeling
                         return True
                 except:
                     continue #field out of bounds so free
     
     if direction == "right":
-        for i in range(coord_x-check_breadth, coord_y+check_breadth+1):
-            for j in range(coord_y-search_horizon*check_breadth, coord_y-check_breadth):
+        for i in range(coord_x-check_breadth, coord_x+check_breadth+1):
+            for j in range(coord_y-(search_horizon+1)*check_breadth, coord_y-check_breadth+1):
                 try:
-                    if map[i][j] < 0: #if unknown, wait for further data by wiggeling
+                    if map[i][j] <= 0: #if unknown, wait for further data by wiggeling
                         return True
                 except:
                     continue #field out of bounds so free
