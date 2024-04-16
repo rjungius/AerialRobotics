@@ -102,6 +102,7 @@ class Controller:
         self.yaw_scan_speed = 1
         self.horizon = 1
         self.mode = -1
+        self.save_map = True
 
     # PID
         Kp, Ki, Kd = 2, 0, 0.2
@@ -250,7 +251,7 @@ class Controller:
         self.map = np.clip(self.map, -1, 1) # certainty can never be more than 100%
 
         # only plot every Nth time step (comment out if not needed)
-        if self.t % 25 == 0:
+        if self.t % 25 == 0 and self.save_map:
             plt.imshow(np.flip(self.map,1), vmin=-1, vmax=1, cmap='gray', origin='lower') # flip the map to match the coordinate system
             plt.savefig("map.png")
             plt.close()
