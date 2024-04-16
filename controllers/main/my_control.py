@@ -3,22 +3,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 import cv2
-import networkx as nx
 
 # Global variables
 on_ground = True
-height_desired = 1.0
+# height_desired = 1.0
 timer = None
 startpos = None
 timer_done = None
-mode = None
-graph = None
-next_cell = None
-pid_vel_x = None
-pid_vel_y = None
-pid_z = None
-pid_yaw = None
 
+controller = None
 # The available ground truth state measurements can be accessed by calling sensor_data[item]. All values of "item" are provided as defined in main.py lines 296-323. 
 # The "item" values that you can later use in the hardware project are:
 # "x_global": Global X position
@@ -32,7 +25,7 @@ pid_yaw = None
 
 # This is the main function where you will implement your control algorithm
 def get_command(sensor_data, camera_data, dt):
-    global on_ground, startpos, mode, graph, next_cell, pid_vel_x, pid_vel_y, pid_z, pid_yaw
+    global on_ground, startpos, controller
 
     # Open a window to display the camera image
     # NOTE: Displaying the camera image will slow down the simulation, this is just for testing
@@ -42,259 +35,28 @@ def get_command(sensor_data, camera_data, dt):
     # Take off
     if startpos is None:
         startpos = [sensor_data['x_global'], sensor_data['y_global'], sensor_data['range_down']]   
-        print(f'startpos: {startpos}')
-        print(int(np.round(startpos[0]/res_pos)), int(np.round(startpos[1]/res_pos)))
     if on_ground and sensor_data['range_down'] < 0.49:
-        control_command = [0.0, 0.0, height_desired, 0.0]
+        control_command = [0.0, 0.0, 1.0, 0.0]
         return control_command
     else:
         if on_ground:
-            print(sensor_data['x_global'], sensor_data['y_global'])
-            print(int(sensor_data['x_global']/res_pos), int(sensor_data['y_global']/res_pos))
             on_ground = False
 
     # ---- YOUR CODE HERE ----
-    pos_to_cord = lambda x: int(np.round(x/res_pos))
-    cord_to_pos = lambda x: x*res_pos + res_pos/2
- 
-    if mode == None: 
-        mode = 0
-        Kp, Ki, Kd = 1, 0, 0.2
-        pid_vel_x = PIDController(Kp, Ki, Kd, startpos[0], 0.3)
-        pid_vel_y = PIDController(Kp, Ki, Kd, startpos[1], 0.3)
-        pid_yaw = PIDController(Kp, Ki, Kd, 0, 0.7)
-    if graph == None:
-        graph = nx.grid_2d_graph(int(5/res_pos), int(3/res_pos))
-        for u,v in graph.edges():
-            graph[u][v]["weight"] = 1
     
-    # print(dt)
+    if controller == None: 
+        controller = Controller(startpos)
 
-    pos_x = sensor_data['x_global']
-    pos_y = sensor_data['y_global']
-    yaw = sensor_data['yaw']
-    idx_x = pos_to_cord(pos_x)
-    idx_y = pos_to_cord(pos_y)
-    map = occupancy_map(sensor_data)
-    
-    control_command = [0, 0, height_desired, 0]
-    
-    if mode == -1: #stabilize on startpad for testing:
-        # print(startpos[0]-pos_x, startpos[1]-pos_y, yaw)
-        
-        control_command[0] = pid_vel_x.update(pos_x)
-        control_command[1] = pid_vel_y.update(pos_y)
-        control_command[2] = height_desired
-        control_command[3] = pid_yaw.update(yaw)
-
-        mode = 0
-        for i in control_command:
-            if i == height_desired:
-                continue
-            if i > 0.001:
-                mode = -1
-        if mode == 0:
-            print("start pos reached")
-        return control_command
-    
-    if mode == 0: # Reach target area
-        tar_x = 4
-        tar_y = 1.5
-        tol = 0.01
-        yaw_scan = np.pi/2
-        horizon = 2
-        drone_width = 0.15
-        front_blocked = False
-
-        if pos_x>3.5:
-            print("Landing Zone reached")
-            mode = 1
-            return control_command
-
-        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "front", drone_width, horizon):
-            # print("front path blocked")
-            pid_vel_x.update_setpoint(pos_x)
-            front_blocked = True
-        else:
-            pid_vel_x.update_setpoint(tar_x)
-
-        pid_vel_y.update_setpoint(tar_y)
-
-        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "right", drone_width, horizon):
-            # print("right path blocked")
-            pid_vel_y.update_setpoint(pos_y+1)
-        else:
-            if front_blocked and pos_y > 0.5:
-                pid_vel_y.update_setpoint(pos_y-1)
-        
-        if check_occupancy(map, pos_to_cord(pos_x), pos_to_cord(pos_y), "left", drone_width, horizon):
-            # print("left path blocked")
-            pid_vel_y.update_setpoint(pos_y-1)
-        else:
-            if front_blocked and pos_y < 2.7: # only override right-evade when close to left border
-                pid_vel_y.update_setpoint(pos_y+1)
- 
-        # some yaw-trying-stuff for scanning
-        if pid_yaw.setpoint==0:
-            pid_yaw.max_vel = 1
-            pid_yaw.update_setpoint(yaw_scan)
-        if abs(pid_yaw.prev_error) < 0.01:
-            if pid_yaw.setpoint == yaw_scan:
-                pid_yaw.update_setpoint(-yaw_scan)
-            else:
-                pid_yaw.update_setpoint(yaw_scan)
-        
-
-        d_x = pid_vel_x.update(pos_x)
-        d_y = pid_vel_y.update(pos_y)
-
-        control_command[0] = d_x * np.cos(yaw) + d_y * np.sin(yaw)
-        control_command[1] = -d_x * np.sin(yaw) + d_y * np.cos(yaw)
-        control_command[2] = height_desired
-        control_command[3] = pid_yaw.update(yaw)
-
-        return control_command
-
-        
-        if next_cell == None:
-            update_graph(graph, map)
-            target = (pos_to_cord(tar_x), pos_to_cord(tar_y))
-            path = nx.astar_path(graph, (idx_x, idx_y), target)
-            next_cell = path[1]
-            # print(path)
-            # next_cell = (pos_to_cord(startpos[0])+2, pos_to_cord(startpos[1]))
-
-            pid_vel_x.update_setpoint(cord_to_pos(next_cell[0]))
-            pid_vel_y.update_setpoint(cord_to_pos(next_cell[1]))
-            print(f'next target: {next_cell}')
-
-        control_command[0] = pid_vel_x.update(pos_x)
-        control_command[1] = pid_vel_y.update(pos_y)
-        control_command[3] = pid_yaw.update(yaw)
-        if abs(control_command[0]) < tol and abs(control_command[1]) < tol:
-            next_cell = None
-
-        if sensor_data["range_front"] < 0.2: # local avoidance
-            control_command[0] = -0.2
-            next_cell = None
-
-        if sensor_data["range_left"] < 0.2:
-            control_command[1] = -0.2
-            next_cell = None
-
-        if sensor_data["range_right"] < 0.2:
-            control_command[1] = 0.2
-            next_cell = None
-
-        # print(control_command)
-
-    elif mode == 1: # Find target pad
-        control_command = [0.0, 0.0, height_desired, 0.0]
-    elif mode == 2: # Land on target pad
-        control_command = [0.0, 0.0, height_desired, 0.0]
-    elif mode == 3: # Leave landing pad
-        control_command = [0.0, 0.0, height_desired, 0.0]
-    elif mode == 4: # Fly to start pad
-        control_command = [0.0, 0.0, height_desired, 0.0]
-    elif mode == 5: # Land on start pad
-        control_command = [0.0, 0.0, height_desired, 0.0]
-
-    return control_command # Ordered as array with: [v_forward_cmd, v_left_cmd, alt_cmd, yaw_rate_cmd]
+    return controller(sensor_data, dt)
 
 
-# Occupancy map based on distance sensor
-min_x, max_x = 0, 5.0 # meter
-# min_y, max_y = 0, 5.0 # meter ### only 3 m in width?
-min_y, max_y = 0, 3.0 # meter
-range_max = 2.0 # meter, maximum range of distance sensor
-res_pos = 0.05 # meter
-conf = 0.2 # certainty given by each measurement
-t = 0 # only for plotting
 
-map = np.zeros((int((max_x-min_x)/res_pos), int((max_y-min_y)/res_pos))) # 0 = unknown, 1 = free, -1 = occupied
+## Cleaned code, also add class for graph/dijkstra for visibilty graph on way back
 
-def occupancy_map(sensor_data):
-    global map, t
-    pos_x = sensor_data['x_global']
-    pos_y = sensor_data['y_global']
-    yaw = sensor_data['yaw']
-    
-    for j in range(4): # 4 sensors
-        yaw_sensor = yaw + j*np.pi/2 #yaw positive is counter clockwise
-        if j == 0:
-            measurement = sensor_data['range_front']
-        elif j == 1:
-            measurement = sensor_data['range_left']
-        elif j == 2:
-            measurement = sensor_data['range_back']
-        elif j == 3:
-            measurement = sensor_data['range_right']
-        
-        for i in range(int(range_max/res_pos)): # range is 2 meters
-            dist = i*res_pos
-            idx_x = int(np.round((pos_x - min_x + dist*np.cos(yaw_sensor))/res_pos,0))
-            idx_y = int(np.round((pos_y - min_y + dist*np.sin(yaw_sensor))/res_pos,0))
+# Consider something that sets target to 1.5, 4.5, but the next distance X away. now if theres ojbect front, you move that by X back
+# or left and right similarily (if right, add x, if object left, remove x -> if both sides object, we fine. if one side object, move left. 
+# if we end up at our own position, we know its blocked front only and were in middle of map (otherwise I would move towards middle), and we need to step left)
 
-            # make sure the current_setpoint is within the map
-            if idx_x < 0 or idx_x >= map.shape[0] or idx_y < 0 or idx_y >= map.shape[1] or dist > range_max:
-                break
-
-            # update the map
-            if dist < measurement:
-                map[idx_x, idx_y] += conf
-            else:
-                map[idx_x, idx_y] -= conf
-                break
-    
-    map = np.clip(map, -1, 1) # certainty can never be more than 100%
-
-    # only plot every Nth time step (comment out if not needed)
-    if t % 150 == 0:
-        plt.imshow(np.flip(map,1), vmin=-1, vmax=1, cmap='gray', origin='lower') # flip the map to match the coordinate system
-        plt.savefig("map.png")
-        plt.close()
-    t +=1
-
-    return map
-
-
-def update_graph(graph, map):
-    x,y = map.shape
-    for i in range(x):
-        for j in range(y):
-            if map[i][j] < -0.3 and graph.has_node((i,j)):
-                graph.remove_node((i,j))
-
-def check_occupancy(map, coord_x, coord_y, direction, drone_width, search_horizon):
-    check_breadth = int(drone_width/res_pos/2)+1 # +1 to account for rounding
-    
-    if direction == "front":
-        for i in range(coord_x+check_breadth+1, coord_x+(search_horizon+1)*check_breadth):
-            for j in range(coord_y-check_breadth, coord_y+check_breadth+1):
-                try:
-                    if map[i][j] <= 0: #if unknown, wait for further data by wiggeling
-                        return True
-                except:
-                    continue #field out of bounds so free
-    
-    if direction == "left":
-        for i in range(coord_x-check_breadth, coord_x+check_breadth+1):
-            for j in range(coord_y+check_breadth +1, coord_y+(search_horizon+1)*check_breadth):
-                try:
-                    if map[i][j] <= 0: #if unknown, wait for further data by wiggeling
-                        return True
-                except:
-                    continue #field out of bounds so free
-    
-    if direction == "right":
-        for i in range(coord_x-check_breadth, coord_x+check_breadth+1):
-            for j in range(coord_y-(search_horizon+1)*check_breadth, coord_y-check_breadth+1):
-                try:
-                    if map[i][j] <= 0: #if unknown, wait for further data by wiggeling
-                        return True
-                except:
-                    continue #field out of bounds so free
-    return False
 
 class PIDController:
     def __init__(self, Kp, Ki, Kd, setpoint, max_vel):
@@ -332,88 +94,182 @@ class PIDController:
     def update_setpoint(self, setpoint):
         self.setpoint = setpoint
 
+class Controller:
+    def __init__(self, startpos):
+    # Other Constants
+        self.drone_width = 0.2
+        self.yaw_range = np.pi/2
+        self.yaw_scan_speed = 1
+        self.horizon = 1
+        self.mode = -1
 
+    # PID
+        Kp, Ki, Kd = 2, 0, 0.2
+        vel_x, vel_y, vel_yaw, vel_z = 0.3, 0.3, 0.7, 0.3
 
+        self.target_height = 1.0
 
+        self.pid_x = PIDController(Kp, Ki, Kd, startpos[0], vel_x)
+        self.pid_y = PIDController(Kp, Ki, Kd, startpos[1], vel_y)
+        self.pid_z = PIDController(Kp, Ki, Kd, self.target_height, vel_z)
+        self.pid_yaw = PIDController(Kp, Ki, Kd, 0, vel_yaw)
+        # add one for height control
 
+    # Map
+        self.min_x, self.max_x = 0, 5.0 # meter
+        self.min_y, self.max_y = 0, 3.0 # meter
+        self.range_max = 2.0 # meter, maximum range of distance sensor
+        self.res_pos = 0.05 # meter
+        self.conf = 0.2 # certainty given by each measurement
+        self.t = 0 # only for plotting
 
+        self.map = np.zeros((int((self.max_x-self.min_x)/self.res_pos), int((self.max_y-self.min_y)/self.res_pos))) # 0 = unknown, 1 = free, -1 = occupied
+    
+    # Static calculations per Simulation
+        self.drone_map_width = int(self.drone_width/self.res_pos)
+        if self.drone_map_width % 2 == 0: # if even, make odd
+            self.drone_map_width +=1
 
+    def __call__(self, sensor_data, dt):
+        return self.update_pid(sensor_data, dt)
 
+    def update_pid(self, sensor_data, dt):
+        self.occupancy_map(sensor_data)
 
+        if self.mode == -1: #stabilize on startpad for testing:
+            control_command = self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
+            
+            for i in range(len(control_command)):
+                if i == 2:
+                    if abs(control_command[i]-self.target_height) > 0.01:
+                        return control_command
+                elif abs(control_command[i]) > 0.01:
+                    return control_command
+            print("[LOG] Start pos reached")
+            self.mode = 0
+            return control_command
+        
+        if self.mode == 0:
+            return self.reach_targetzone(sensor_data, dt)
+        
+        return self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
+        
+    def reach_targetzone(self, sensor_data, dt): # task 1
+        tar_x, tar_y = 4, 1.5
+        step_size = 0.2
+        pos_x, pos_y, yaw = sensor_data['x_global'], sensor_data['y_global'], sensor_data['yaw']
+        
+        if pos_x >= 3.5: 
+            self.mode +=1
+            print("[LOG] Target zone reached")
+            self.pid_x.update_setpoint(pos_x)
+            self.pid_y.update_setpoint(pos_y)
+            self.pid_yaw.update_setpoint(0)
+            return self.get_control(pos_x, pos_y, self.target_height, yaw)
+        
+        dir_x = min(pos_x + step_size, tar_x)
+        dir_y = min(pos_y + step_size, max(pos_y - step_size, tar_y))
 
+        cord_x = self.p2c(pos_x)
+        cord_y = self.p2c(pos_y)
 
+        if self.check_occupancy(cord_x+self.drone_map_width, cord_y):
+            dir_x -= step_size
+        if self.check_occupancy(cord_x, cord_y+self.drone_map_width) or self.check_occupancy(cord_x+self.drone_map_width, cord_y+self.drone_map_width):
+            dir_y -= step_size
+        if self.check_occupancy(cord_x, cord_y-self.drone_map_width) or self.check_occupancy(cord_x+self.drone_map_width, cord_y-self.drone_map_width):
+            dir_y += step_size
 
+        #if front blocked and both sides free:
+        if abs(dir_x- pos_x) < 0.01 and abs(dir_y-pos_y) < 0.01: # with tolerance cuz why not
+            if pos_y > 2.3: # when too far left
+                dir_y -= step_size
+            else:
+                dir_y += step_size
 
+        self.pid_x.update_setpoint(dir_x) #update x-target
+        self.pid_y.update_setpoint(dir_y) # update y-target
+        self.yaw_scan() # Wiggle
 
+        return self.get_control(pos_x, pos_y, self.target_height, yaw)
+    
+    def yaw_scan(self):
+        if self.pid_yaw.setpoint==0:
+            self.pid_yaw.max_vel = self.yaw_scan_speed
+            self.pid_yaw.update_setpoint(self.yaw_range)
+        if abs(self.pid_yaw.prev_error) < 0.01:
+            if self.pid_yaw.setpoint == self.yaw_range:
+                self.pid_yaw.update_setpoint(-self.yaw_range)
+            else:
+                self.pid_yaw.update_setpoint(self.yaw_range)
 
+    def get_control(self, pos_x, pos_y, height, yaw): 
+        control_command = [0.0,0.0,height, 0.0]
+        d_x = self.pid_x.update(pos_x)
+        d_y = self.pid_y.update(pos_y)
 
+        control_command[0] = d_x * np.cos(yaw) + d_y * np.sin(yaw)
+        control_command[1] = -d_x * np.sin(yaw) + d_y * np.cos(yaw)
+        control_command[2] = height + self.pid_z.update(height) # should work
+        control_command[3] = self.pid_yaw.update(yaw)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Control from the exercises
-index_current_setpoint = 0
-def path_to_setpoint(path,sensor_data,dt):
-    global on_ground, height_desired, index_current_setpoint, timer, timer_done, startpos
-
-    # Take off
-    if startpos is None:
-        startpos = [sensor_data['x_global'], sensor_data['y_global'], sensor_data['range_down']]    
-    if on_ground and sensor_data['range_down'] < 0.49:
-        current_setpoint = [startpos[0], startpos[1], height_desired, 0.0]
-        return current_setpoint
-    else:
-        on_ground = False
-
-    # Start timer
-    if (index_current_setpoint == 1) & (timer is None):
-        timer = 0
-        print("Time recording started")
-    if timer is not None:
-        timer += dt
-    # Hover at the final setpoint
-    if index_current_setpoint == len(path):
-        # Uncomment for KF
-        control_command = [startpos[0], startpos[1], startpos[2]-0.05, 0.0]
-
-        if timer_done is None:
-            timer_done = True
-            print("Path planing took " + str(np.round(timer,1)) + " [s]")
         return control_command
+    
+    def occupancy_map(self, sensor_data):
+        pos_x = sensor_data['x_global']
+        pos_y = sensor_data['y_global']
+        yaw = sensor_data['yaw']
 
-    # Get the goal position and drone position
-    current_setpoint = path[index_current_setpoint]
-    x_drone, y_drone, z_drone, yaw_drone = sensor_data['x_global'], sensor_data['y_global'], sensor_data['range_down'], sensor_data['yaw']
-    distance_drone_to_goal = np.linalg.norm([current_setpoint[0] - x_drone, current_setpoint[1] - y_drone, current_setpoint[2] - z_drone, clip_angle(current_setpoint[3]) - clip_angle(yaw_drone)])
+        for j in range(4): # 4 sensors
+            yaw_sensor = yaw + j*np.pi/2 #yaw positive is counter clockwise
+            if j == 0:
+                measurement = sensor_data['range_front']
+            elif j == 1:
+                measurement = sensor_data['range_left']
+            elif j == 2:
+                measurement = sensor_data['range_back']
+            elif j == 3:
+                measurement = sensor_data['range_right']
 
-    # When the drone reaches the goal setpoint, e.g., distance < 0.1m
-    if distance_drone_to_goal < 0.1:
-        # Select the next setpoint as the goal position
-        index_current_setpoint += 1
-        # Hover at the final setpoint
-        if index_current_setpoint == len(path):
-            current_setpoint = [0.0, 0.0, height_desired, 0.0]
-            return current_setpoint
+            for i in range(int(self.range_max/self.res_pos)): # range is 2 meters
+                dist = i*self.res_pos
+                idx_x = int(np.round((pos_x - self.min_x + dist*np.cos(yaw_sensor))/self.res_pos,0))
+                idx_y = int(np.round((pos_y - self.min_y + dist*np.sin(yaw_sensor))/self.res_pos,0))
 
-    return current_setpoint
+                # make sure the current_setpoint is within the map
+                if idx_x < 0 or idx_x >= self.map.shape[0] or idx_y < 0 or idx_y >= self.map.shape[1] or dist > self.range_max:
+                    break
 
-def clip_angle(angle):
-    angle = angle%(2*np.pi)
-    if angle > np.pi:
-        angle -= 2*np.pi
-    if angle < -np.pi:
-        angle += 2*np.pi
-    return angle
+                # update the map
+                if dist < measurement:
+                    self.map[idx_x, idx_y] += self.conf
+                else:
+                    self.map[idx_x, idx_y] -= self.conf
+                    break
+                
+        self.map = np.clip(self.map, -1, 1) # certainty can never be more than 100%
+
+        # only plot every Nth time step (comment out if not needed)
+        if self.t % 25 == 0:
+            plt.imshow(np.flip(self.map,1), vmin=-1, vmax=1, cmap='gray', origin='lower') # flip the map to match the coordinate system
+            plt.savefig("map.png")
+            plt.close()
+        self.t +=1
+
+        return map
+
+    def check_occupancy(self, c_x, c_y):
+        for i in range(c_x - int(self.drone_map_width/2), c_x + int(self.drone_map_width/2)+1):
+            for j in range(c_y - int(self.drone_map_width/2), c_y + int(self.drone_map_width/2)+1):
+                try:
+                    if self.map[i][j] <= 0: # Cell occupied or unexplored
+                        return True
+                except:
+                    return True # hit map border
+        return False
+    
+    def p2c(self, x):
+        return int(np.round(x/self.res_pos))
+    
+    def c2p(self, x):
+        return x*self.res_pos + self.res_pos/2
