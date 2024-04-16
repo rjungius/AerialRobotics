@@ -5,13 +5,8 @@ import time
 import cv2
 
 # Global variables
-on_ground = True
-# height_desired = 1.0
-timer = None
-startpos = None
-timer_done = None
-
 controller = None
+
 # The available ground truth state measurements can be accessed by calling sensor_data[item]. All values of "item" are provided as defined in main.py lines 296-323. 
 # The "item" values that you can later use in the hardware project are:
 # "x_global": Global X position
@@ -25,7 +20,7 @@ controller = None
 
 # This is the main function where you will implement your control algorithm
 def get_command(sensor_data, camera_data, dt):
-    global on_ground, startpos, controller
+    global controller
 
     # Open a window to display the camera image
     # NOTE: Displaying the camera image will slow down the simulation, this is just for testing
@@ -33,19 +28,19 @@ def get_command(sensor_data, camera_data, dt):
     # cv2.waitKey(1)
     
     # Take off
-    if startpos is None:
-        startpos = [sensor_data['x_global'], sensor_data['y_global'], sensor_data['range_down']]   
-    if on_ground and sensor_data['range_down'] < 0.49:
-        control_command = [0.0, 0.0, 1.0, 0.0]
-        return control_command
-    else:
-        if on_ground:
-            on_ground = False
+    # if startpos is None:
+    #     startpos =    
+    # if on_ground and sensor_data['range_down'] < 0.49:
+    #     control_command = [0.0, 0.0, 1.0, 0.0]
+    #     return control_command
+    # else:
+    #     if on_ground:
+    #         on_ground = False
 
     # ---- YOUR CODE HERE ----
     
     if controller == None: 
-        controller = Controller(startpos)
+        controller = Controller(sensor_data)
 
     return controller(sensor_data, dt)
 
@@ -95,24 +90,26 @@ class PIDController:
         self.setpoint = setpoint
 
 class Controller:
-    def __init__(self, startpos):
+    def __init__(self, sensor_data):
     # Other Constants
         self.drone_width = 0.2
         self.yaw_range = np.pi/2
         self.yaw_scan_speed = 1
         self.horizon = 1
-        self.mode = -1
+        self.mode = -1 # start at -1 for takeoff
         self.save_map = True
+        self.startpos = [sensor_data['x_global'], sensor_data['y_global'], sensor_data['range_down']]
 
     # PID
         Kp, Ki, Kd = 2, 0, 0.2
-        vel_x, vel_y, vel_yaw, vel_z = 0.3, 0.3, 0.7, 0.3
+        Kp_z, Ki_z, Kd_z = 1, 5, 200 ##????
+        vel_x, vel_y, vel_z, vel_yaw = 0.3, 0.3, 1, 1
 
         self.target_height = 1.0
 
-        self.pid_x = PIDController(Kp, Ki, Kd, startpos[0], vel_x)
-        self.pid_y = PIDController(Kp, Ki, Kd, startpos[1], vel_y)
-        self.pid_z = PIDController(Kp, Ki, Kd, self.target_height, vel_z)
+        self.pid_x = PIDController(Kp, Ki, Kd, self.startpos[0], vel_x)
+        self.pid_y = PIDController(Kp, Ki, Kd, self.startpos[1], vel_y)
+        self.pid_z = PIDController(Kp_z, Ki_z, Kd_z, 0.1, vel_z) # for landing only
         self.pid_yaw = PIDController(Kp, Ki, Kd, 0, vel_yaw)
         # add one for height control
 
@@ -138,24 +135,39 @@ class Controller:
         self.occupancy_map(sensor_data)
 
         if self.mode == -1: #stabilize on startpad for testing:
-            control_command = self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
-            
-            for i in range(len(control_command)):
-                if i == 2:
-                    if abs(control_command[i]-self.target_height) > 0.01:
-                        return control_command
-                elif abs(control_command[i]) > 0.01:
-                    return control_command
-            print("[LOG] Start pos reached")
-            self.mode = 0
-            return control_command
-        
+            return self.take_off(sensor_data)
         if self.mode == 0:
-            return self.reach_targetzone(sensor_data, dt)
-        
+            return self.reach_targetzone(sensor_data)
+        # if self.mode == 1: # find target 
+        if self.mode == 2: # land on target
+            return self.land(sensor_data)
         return self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
-        
-    def reach_targetzone(self, sensor_data, dt): # task 1
+
+    def take_off(self, sensor_data):
+        control_command = self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
+        for i in range(len(control_command)):
+            if i == 2:
+                if abs(control_command[i]-sensor_data['range_down']) > 0.01:
+                    return control_command
+            elif abs(control_command[i]) > 0.01:
+                return control_command
+        print("[LOG] Launch successful")
+        # self.mode += 1
+        self.mode = 2
+
+        return control_command
+    
+    def land(self, sensor_data):
+        control_command = self.get_control(sensor_data['x_global'], sensor_data['y_global'], 0, sensor_data['yaw'])
+        control_command[2] = self.pid_z.update(sensor_data['range_down'])
+        print(sensor_data['range_down'])
+        if sensor_data['range_down'] < 0.015:
+            print("[LOG] Landing successful")
+            self.target_height = 0
+            self.mode+=1
+        return control_command
+
+    def reach_targetzone(self, sensor_data): # task 1
         tar_x, tar_y = 4, 1.5
         step_size = 0.2
         pos_x, pos_y, yaw = sensor_data['x_global'], sensor_data['y_global'], sensor_data['yaw']
@@ -211,7 +223,8 @@ class Controller:
 
         control_command[0] = d_x * np.cos(yaw) + d_y * np.sin(yaw)
         control_command[1] = -d_x * np.sin(yaw) + d_y * np.cos(yaw)
-        control_command[2] = height + self.pid_z.update(height) # should work
+        # control_command[2] = self.target_height + max(0, self.pid_z.update(height)) # should work
+        control_command[2] = height # should work
         control_command[3] = self.pid_yaw.update(yaw)
 
         return control_command
