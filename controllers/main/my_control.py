@@ -165,7 +165,8 @@ class Controller:
         return control_command
     
     def generate_targetpath(self, pos_y):
-        
+        self.path = [(pos_y, 3.75), (0.2, 3.75), (0.2, 4.04), (2.8, 4.04), 
+                     (4.04, 3.1)]
 
     def find_targetpad(self, sensor_data):
         # return self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
