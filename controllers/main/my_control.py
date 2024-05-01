@@ -555,7 +555,7 @@ class Controller:
     def c2p(self, x):
         return x*self.res_pos + self.res_pos/2
 
-
+# Code for A* algorithm from GitHub Copilot
 def heuristic(a, b):
     return ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5
 
