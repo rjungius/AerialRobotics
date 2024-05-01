@@ -147,13 +147,15 @@ class Controller:
         if self.mode == 8:
             self.pid_x.update_setpoint(self.startpos[0])
             self.pid_y.update_setpoint(self.startpos[1])
-            if sensor_data['x_global'] < 0.01 and sensor_data['y_global'] < 0.01:
+            if abs(sensor_data['x_global']-self.pid_x.setpoint) > 0.01 and abs(sensor_data['y_global']-self.pid_y.setpoint)> 0.01:
+                print("[LOG] Hovering over startpad")
                 self.mode+=1
             return self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
         if self.mode == 9:
-            return self.land()
+            return self.land(sensor_data)
         if self.mode == 10:
             print("[LOG] Simulation finished")
+            self.mode += 1
         return [0,0,0,0]
 
     def get_home_path(self, start_x, start_y):
@@ -189,7 +191,7 @@ class Controller:
         pos_x, pos_y, yaw = sensor_data['x_global'], sensor_data['y_global'], sensor_data['yaw']
         cord_x, cord_y = self.p2c(pos_x), self.p2c(pos_y)
 
-        if abs(pos_x-self.startpos[0]) < 0.01 and abs(pos_y-self.startpos[1]) < 0.01: 
+        if self.path_count == len(self.path): 
             self.mode +=1
             print("[LOG] Start pad reached")
             self.pid_x.update_setpoint(pos_x)
@@ -202,7 +204,7 @@ class Controller:
         self.pid_x.update_setpoint(next_x)
         self.pid_y.update_setpoint(next_y)
 
-        if abs(pos_x-next_x) < 0.05 and abs(pos_y-next_y) < 0.05:
+        if abs(pos_x-next_x) < 0.1 and abs(pos_y-next_y) < 0.1:
             self.path_count += 1
         return self.get_control(pos_x, pos_y, self.target_height, yaw)
  
