@@ -80,7 +80,7 @@ class Controller:
         self.yaw_scan_speed = 1
         self.horizon = 1
         self.mode = -1 # start at -1 for takeoff
-        self.save_map = True
+        self.save_map = False
         self.startpos = [sensor_data['x_global'], sensor_data['y_global'], sensor_data['range_down']]
 
         self.evade_dir = -1 # -1 to move right, 1 to move left
