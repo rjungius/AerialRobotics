@@ -34,15 +34,6 @@ def get_command(sensor_data, camera_data, dt):
 
     return controller(sensor_data, dt)
 
-
-
-## Cleaned code, also add class for graph/dijkstra for visibilty graph on way back
-
-# Consider something that sets target to 1.5, 4.5, but the next distance X away. now if theres ojbect front, you move that by X back
-# or left and right similarily (if right, add x, if object left, remove x -> if both sides object, we fine. if one side object, move left. 
-# if we end up at our own position, we know its blocked front only and were in middle of map (otherwise I would move towards middle), and we need to step left)
-
-
 class PIDController:
     def __init__(self, Kp, Ki, Kd, setpoint, max_vel):
         self.Kp = Kp
@@ -119,9 +110,9 @@ class Controller:
         # Occupancy Map
         self.map = np.zeros((int((self.max_x-self.min_x)/self.res_pos), int((self.max_y-self.min_y)/self.res_pos))) # 0 = unknown, 1 = free, -1 = occupied
     
-        # Target Zone Map
-        min_tar_x, max_tar_x = 3.5, 5
-        self.map = np.zeros((int((self.max_x-self.min_x)/self.res_pos), int((self.max_y-self.min_y)/self.res_pos))) # 0 unknown, -1 = occupied, 1 is checked)
+        # astar Map
+        self.astar_res = 0.2
+        self.astarmap = np.zeros((int((self.max_x-self.min_x)/self.astar_res), int((self.max_y-self.min_y)/self.astar_res))) # 0 unknown, -1 = occupied, 1 is checked)
 
     # Static calculations per Simulation
         self.drone_map_width = int(self.drone_width/self.res_pos)
@@ -150,15 +141,71 @@ class Controller:
         if self.mode == 5:
             return self.take_off(sensor_data)
         if self.mode == 6:
-            self.get_home_path()
+            self.get_home_path(sensor_data['x_global'], sensor_data['y_global'])
         if self.mode == 7:
+            return self.fly_home_brute(sensor_data)
+        if self.mode == 8:
+            self.pid_x.update_setpoint(self.startpos[0])
+            self.pid_y.update_setpoint(self.startpos[1])
+            if sensor_data['x_global'] < 0.01 and sensor_data['y_global'] < 0.01:
+                self.mode+=1
             return self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
+        if self.mode == 9:
+            return self.land()
+        if self.mode == 10:
+            print("[LOG] Simulation finished")
         return [0,0,0,0]
 
-    def get_home_path(self):
+    def get_home_path(self, start_x, start_y):
+        self.drone_width = self.astar_res
+        n,m = self.astarmap.shape
+        for i in range(n):
+            i_cord = i*self.astar_res + self.astar_res/2
+            for j in range(m):
+                j_cord = j*self.astar_res + self.astar_res/2
+                if self.check_occupancy(self.p2c(i_cord), self.p2c(j_cord)):
+                    self.astarmap[i,j] = -1
+        start = (int(np.round(start_x/self.astar_res)), int(np.round(start_y/self.astar_res)))
+        target = (int(np.round(self.startpos[0]/self.astar_res)), int(np.round(self.startpos[1]/self.astar_res)))
+
+        self.path = astar(self.astarmap, start, target)
+        self.path_count = 0
+        # print(self.path)
+
+        if self.save_map:
+            plt.imshow(np.flip(self.astarmap,1), vmin=-1, vmax=1, cmap='gray', origin='lower') # flip the map to match the coordinate system
+            plt.savefig("astarmap.png")
+            plt.close()
+
+        self.pid_x.max_vel = 0.3
+        self.pid_y.max_vel = 0.3
+
         print("[LOG] Home path generated")
         self.mode+=1
 
+    def fly_home_brute(self, sensor_data):
+        pos = lambda x: x*self.astar_res + self.astar_res/2 # cuz too lazy to rewrite all the code
+
+        pos_x, pos_y, yaw = sensor_data['x_global'], sensor_data['y_global'], sensor_data['yaw']
+        cord_x, cord_y = self.p2c(pos_x), self.p2c(pos_y)
+
+        if abs(pos_x-self.startpos[0]) < 0.01 and abs(pos_y-self.startpos[1]) < 0.01: 
+            self.mode +=1
+            print("[LOG] Start pad reached")
+            self.pid_x.update_setpoint(pos_x)
+            self.pid_y.update_setpoint(pos_y)
+            self.pid_yaw.update_setpoint(0)
+            self.last_height = sensor_data['range_down']
+            return self.get_control(pos_x, pos_y, self.target_height, yaw)
+        
+        next_x, next_y = pos(self.path[self.path_count][0]), pos(self.path[self.path_count][1])
+        self.pid_x.update_setpoint(next_x)
+        self.pid_y.update_setpoint(next_y)
+
+        if abs(pos_x-next_x) < 0.05 and abs(pos_y-next_y) < 0.05:
+            self.path_count += 1
+        return self.get_control(pos_x, pos_y, self.target_height, yaw)
+ 
     def take_off(self, sensor_data):
         control_command = self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
         for i in range(len(control_command)):
@@ -177,7 +224,7 @@ class Controller:
         # print(self.evade_dir)
 
         self.mode += 1
-        # self.mode = 2
+        self.target_height = 1
 
         return control_command
     
@@ -216,7 +263,7 @@ class Controller:
             if direction == "u":
                 self.pid_x.update_setpoint(pos_x+0.05)
                 self.pid_y.update_setpoint(pos_y)
-            print(self.pid_x.setpoint, self.pid_y.setpoint)
+            # print(self.pid_x.setpoint, self.pid_y.setpoint)
             self.pid_yaw.update_setpoint(0)
             return self.get_control(pos_x, pos_y, self.target_height, yaw)
         
@@ -257,7 +304,7 @@ class Controller:
                         if front_free:
                             step_x += step_size
                 else:
-                    if front_free and pos_x < 4.75 and abs(pos_y-tar_y) > 0.1:
+                    if front_free and tar_x < 4.6 and abs(pos_y-tar_y) > 0.1:
                         step_x += step_size
                     elif back_free and abs(pos_y-tar_y) > 0.1:
                         step_x -= step_size
@@ -278,7 +325,7 @@ class Controller:
                         if front_free:
                             step_x += step_size
                 else:
-                    if front_free and pos_x < 4.75 and abs(pos_y-tar_y) > 0.1:
+                    if front_free and tar_x < 4.6 and abs(pos_y-tar_y) > 0.1:
                         step_x += step_size
                     elif back_free and abs(pos_y-tar_y) > 0.1:
                         step_x -= step_size
@@ -352,7 +399,6 @@ class Controller:
         return control_command
 
     def reach_targetzone(self, sensor_data): # task 1
-        tar_x, tar_y = 4, 1.5
         step_size = 0.2
         pos_x, pos_y, yaw = sensor_data['x_global'], sensor_data['y_global'], sensor_data['yaw']
         
@@ -406,12 +452,6 @@ class Controller:
             dir_y -= step_size
         if not left_free and not front_free and not right_free: # front obstacle clips left and right
             dir_x = pos_x - 0.1 # move back slightly
-        #     if self.check_occupancy(cord_x, cord_y+self.drone_map_width-self.offset_y): # check if only left free
-        #         dir_y += step_size
-        #     if self.check_occupancy(cord_x, cord_y-self.drone_map_width+self.offset_y): # check if only right free
-        #         dir_y -= step_size
-        #     if dir_y == pos_y: # if both sides blocked, move evade directoin
-        #         dir_x += (self.evade_dir*step_size)
 
         # add running_out_of_map_protection if trying to move e.g. front & right on border
         if dir_y < pos_y and pos_y < 0.1:
@@ -512,3 +552,48 @@ class Controller:
     
     def c2p(self, x):
         return x*self.res_pos + self.res_pos/2
+
+
+def heuristic(a, b):
+    return ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5
+
+def astar(array, start, goal):
+    neighbors = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
+    open_set = {start: 0}
+    came_from = {}
+    g_score = {node: float('inf') for node in np.ndindex(array.shape)}
+    g_score[start] = 0
+    f_score = {node: float('inf') for node in np.ndindex(array.shape)}
+    f_score[start] = heuristic(start, goal)
+
+    while open_set:
+        current = min(open_set, key=open_set.get)
+        del open_set[current]
+
+        if current == goal:
+            path = []
+            while current in came_from:
+                path.append(current)
+                current = came_from[current]
+            path.append(current)
+            return path[::-1]
+
+        for dx, dy in neighbors:
+            neighbor = current[0] + dx, current[1] + dy
+            if 0 <= neighbor[0] < array.shape[0]:
+                if 0 <= neighbor[1] < array.shape[1]:                
+                    if array[neighbor[0]][neighbor[1]] == -1:
+                        continue
+                else:
+                    continue
+            else:
+                continue
+
+            tentative_g_score = g_score[current] + heuristic(current, neighbor)
+            if tentative_g_score < g_score[neighbor]:
+                came_from[neighbor] = current
+                g_score[neighbor] = tentative_g_score
+                f_score[neighbor] = tentative_g_score + heuristic(neighbor, goal)
+                open_set[neighbor] = f_score[neighbor]
+
+    return None
