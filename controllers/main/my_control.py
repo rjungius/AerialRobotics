@@ -87,7 +87,7 @@ class Controller:
         self.path_count = 0
         self.threshold = 0
     # PID
-        Kp, Ki, Kd = 2, 0, 0.5 # tune Kd bit to get a less-jumpy start on target switch
+        Kp, Ki, Kd = 2, 0, 0.5
         Kp_z, Ki_z, Kd_z = 1, 5, 200 ##????
         vel_x, vel_y, vel_z, vel_yaw = 0.2, 0.2, 1, 1
 
@@ -95,15 +95,13 @@ class Controller:
 
         self.pid_x = PIDController(Kp, Ki, Kd, self.startpos[0], vel_x)
         self.pid_y = PIDController(Kp, Ki, Kd, self.startpos[1], vel_y)
-        self.pid_z = PIDController(Kp_z, Ki_z, Kd_z, 0.5, vel_z) # for landing only
         self.pid_yaw = PIDController(Kp, Ki, Kd, 0, vel_yaw)
-        # add one for height control
 
     # Maps
         self.min_x, self.max_x = 0, 5.0 # meter
         self.min_y, self.max_y = 0, 3.0 # meter
         self.range_max = 2.0 # meter, maximum range of distance sensor
-        self.res_pos = 0.025 # meter old: 0.05
+        self.res_pos = 0.05 # meter old: 0.05
         self.conf = 0.2 # certainty given by each measurement
         self.t = 0 # only for plotting
 
@@ -133,32 +131,52 @@ class Controller:
             self.generate_targetpath(sensor_data["y_global"], sensor_data)
         if self.mode == 2: # find target 
             return self.find_targetpad(sensor_data)
-        if self.mode == 3: # land on target
+        if self.mode == 3:
+            return self.ensure_targetpad(sensor_data)
+        if self.mode == 4: # land on target
             return self.land(sensor_data)
-        if self.mode == 4:
+        if self.mode == 5:
             self.target_height = 1
             self.mode+=1
-        if self.mode == 5:
-            return self.take_off(sensor_data)
         if self.mode == 6:
-            self.get_home_path(sensor_data['x_global'], sensor_data['y_global'])
+            return self.take_off(sensor_data)
         if self.mode == 7:
-            return self.fly_home_brute(sensor_data)
+            self.get_home_path(sensor_data['x_global'], sensor_data['y_global'])
         if self.mode == 8:
+            return self.fly_home_brute(sensor_data)
+        if self.mode == 9:
             self.pid_x.update_setpoint(self.startpos[0])
             self.pid_y.update_setpoint(self.startpos[1])
             if abs(sensor_data['x_global']-self.pid_x.setpoint) > 0.01 and abs(sensor_data['y_global']-self.pid_y.setpoint)> 0.01:
                 print("[LOG] Hovering over startpad")
                 self.mode+=1
             return self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
-        if self.mode == 9:
-            return self.land(sensor_data)
         if self.mode == 10:
+            return self.land(sensor_data)
+        if self.mode == 11:
             print("[LOG] Simulation finished")
             self.mode += 1
         return [0,0,0,0]
 
+    def enlarge_objects(self):
+        n,m = self.map.shape
+        self.enlarged_map = np.zeros((n,m))
+        for i in range(n):
+            for j in range(m):
+                if self.check_occupancy(i,j):
+                    self.enlarged_map[i,j] = -1
+                else:
+                    self.enlarged_map[i,j] = 1
+        if self.save_map:
+            plt.imshow(np.flip(self.enlarged_map,1), vmin=-1, vmax=1, cmap='gray', origin='lower')
+            plt.savefig("enlarged_map.png")
+            plt.close()
+            self.save_map = False
+
     def get_home_path(self, start_x, start_y):
+        self.enlarge_objects()
+        self.map = self.enlarged_map
+
         self.drone_width = self.astar_res
         n,m = self.astarmap.shape
         for i in range(n):
@@ -172,7 +190,6 @@ class Controller:
 
         self.path = astar(self.astarmap, start, target)
         self.path_count = 0
-        # print(self.path)
 
         if self.save_map:
             plt.imshow(np.flip(self.astarmap,1), vmin=-1, vmax=1, cmap='gray', origin='lower') # flip the map to match the coordinate system
@@ -189,7 +206,6 @@ class Controller:
         pos = lambda x: x*self.astar_res + self.astar_res/2 # cuz too lazy to rewrite all the code
 
         pos_x, pos_y, yaw = sensor_data['x_global'], sensor_data['y_global'], sensor_data['yaw']
-        cord_x, cord_y = self.p2c(pos_x), self.p2c(pos_y)
 
         if self.path_count == len(self.path): 
             self.mode +=1
@@ -210,6 +226,7 @@ class Controller:
  
     def take_off(self, sensor_data):
         control_command = self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
+        control_command[2] = min(sensor_data['range_down']+0.3, 1.0)
         for i in range(len(control_command)):
             if i == 2:
                 if abs(control_command[i]-sensor_data['range_down']) > 0.01:
@@ -223,7 +240,6 @@ class Controller:
             self.evade_dir = -1
         else:
             self.evade_dir = 1
-        # print(self.evade_dir)
 
         self.mode += 1
         self.target_height = 1
@@ -237,35 +253,56 @@ class Controller:
                      (4.85, 2.8, "l")]
         
         print("[LOG] Target path generated")
-        # print(self.path)
         self.mode += 1
         return self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
 
-    def find_targetpad(self, sensor_data):
-        # return self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
+    def ensure_targetpad(self, sensor_data):
+        if self.last_direction != "u":
+            self.pid_x.update_setpoint(self.tar_x+0.1)
+            if abs(self.last_height-sensor_data['range_down']) > 0.05: # left target_pad
+                self.pid_x.update_setpoint(self.tar_x-0.2)
+        else:
+            self.pid_y.update_setpoint(self.tar_y+0.1)
+            if abs(self.last_height-sensor_data['range_down']) > 0.05:
+                self.pid_y.update_setpoint(self.tar_y-0.2)
+        if abs(sensor_data['x_global']-self.pid_x.setpoint) < 0.02 and abs(sensor_data['y_global']-self.pid_y.setpoint) < 0.02:
+            self.tar_x = self.tar_x + (self.pid_x.setpoint-self.tar_x)/2
+            self.tar_y = self.tar_y + (self.pid_y.setpoint-self.tar_y)/2
+            self.pid_x.update_setpoint(self.tar_x)
+            self.pid_y.update_setpoint(self.tar_y)
+            self.mode += 1
 
+        self.last_height = sensor_data["range_down"]
+        return self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
+    
+    def find_targetpad(self, sensor_data):
         pos_x, pos_y, yaw = sensor_data['x_global'], sensor_data['y_global'], sensor_data['yaw']
         cord_x, cord_y = self.p2c(pos_x), self.p2c(pos_y)
         tar_x, tar_y, direction = self.path[self.path_count]
         step_size = 0.2
-        # self.drone_width = 0.1 #dont question it
 
-        # print(tar_x, tar_y)
         # condition: abs(last height- current height) > 0.08, then target pad found
-        # maybe add some center-finding of targetpad
         if abs(self.last_height - sensor_data['range_down']) > 0.08: # target pad height 0.1
             print("[LOG] Target pad found")
             self.mode += 1
             if direction == "l":
                 self.pid_x.update_setpoint(pos_x)
                 self.pid_y.update_setpoint(pos_y+0.05)
+                self.tar_x = pos_x
+                self.tar_y = pos_y+0.05
             if direction == "r":
                 self.pid_x.update_setpoint(pos_x)
                 self.pid_y.update_setpoint(pos_y-0.05)
+                self.tar_x = pos_x
+                self.tar_y = pos_y-0.05
             if direction == "u":
                 self.pid_x.update_setpoint(pos_x+0.05)
                 self.pid_y.update_setpoint(pos_y)
-            # print(self.pid_x.setpoint, self.pid_y.setpoint)
+                self.tar_x = pos_x+0.05
+                self.tar_y = pos_y
+
+            self.last_direction = direction
+            self.target_height = 0.9 #dont make the copter go higher over pad                
             self.pid_yaw.update_setpoint(0)
             return self.get_control(pos_x, pos_y, self.target_height, yaw)
         
@@ -274,75 +311,70 @@ class Controller:
         right_free = True
         back_free = True
 
-        # print(pos_x, pos_y, tar_x, tar_y)
+        back_right_free = True
+        back_left_free = True
+        front_right_free = True
+        front_left_free = True
 
-        if self.check_occupancy(cord_x+self.drone_map_width-self.offset_x, cord_y):
+        if self.check_occupancy(cord_x+self.drone_map_width-self.offset_x, cord_y) or self.check_occupancy(cord_x+self.drone_map_width+1-self.offset_x, cord_y):
             front_free = False
-        if self.check_occupancy(cord_x, cord_y+self.drone_map_width-self.offset_y):
+        if self.check_occupancy(cord_x, cord_y+self.drone_map_width-self.offset_y) or self.check_occupancy(cord_x, cord_y+1+self.drone_map_width-self.offset_y):
             left_free = False
-        if self.check_occupancy(cord_x, cord_y-self.drone_map_width+self.offset_y):
+        if self.check_occupancy(cord_x, cord_y-self.drone_map_width+self.offset_y) or self.check_occupancy(cord_x, cord_y-1-self.drone_map_width+self.offset_y):
             right_free = False
-        if self.check_occupancy(cord_x-self.drone_map_width+self.offset_x, cord_y):
+        if self.check_occupancy(cord_x-self.drone_map_width+self.offset_x, cord_y) or self.check_occupancy(cord_x-self.drone_map_width-1+self.offset_x, cord_y):
             back_free = False
         
-        # print(front_free, left_free, right_free, back_free)
-
+        if self.check_occupancy(cord_x-self.drone_map_width, cord_y-self.drone_map_width) or self.check_occupancy(cord_x-1-self.drone_map_width, cord_y-self.drone_map_width):
+            back_right_free = False
+        if self.check_occupancy(cord_x-self.drone_map_width, cord_y+self.drone_map_width) or self.check_occupancy(cord_x-1-self.drone_map_width, cord_y+self.drone_map_width):
+            back_left_free = False
+        if self.check_occupancy(cord_x+self.drone_map_width, cord_y-self.drone_map_width) or self.check_occupancy(cord_x+1+self.drone_map_width, cord_y-self.drone_map_width):
+            front_right_free= False
+        if self.check_occupancy(cord_x+self.drone_map_width, cord_y+self.drone_map_width) or self.check_occupancy(cord_x+1+self.drone_map_width, cord_y+self.drone_map_width):
+            front_left_free = False
+        
         step_x = pos_x
         step_y = pos_y
 
         if direction == "r":
-            if right_free and pos_x-tar_x > 0.05 and back_free and not self.check_occupancy(cord_x-self.drone_map_width, cord_y-self.drone_map_width): # can move forward but are next to path
+            if (right_free and pos_x-tar_x > 0.05 and back_free and back_left_free and back_right_free): # can move forward but are next to path
                 step_x = tar_x
-            elif right_free and tar_x - pos_x > 0.05 and front_free and not self.check_occupancy(cord_x+self.drone_map_width, cord_y-self.drone_map_width):
+            elif (right_free and tar_x - pos_x > 0.05 and front_free and front_left_free and front_right_free):
                 step_x = tar_x
             elif right_free and abs(pos_y-tar_y) > 0.1: # and not close to target
                     step_y -= step_size
             else:
-                if abs(pos_x-tar_x) > 0.35:
-                    if pos_x > tar_x: # too high
-                        if back_free:
-                            step_x -= step_size
-                    else: # too low
-                        if front_free:
-                            step_x += step_size
-                else:
-                    if front_free and tar_x < 4.6 and abs(pos_y-tar_y) > 0.1:
-                        step_x += step_size
-                    elif back_free and abs(pos_y-tar_y) > 0.1:
-                        step_x -= step_size
+                if front_free and tar_x < 4.2 and abs(pos_y-tar_y) > 0.1:
+                    step_x += step_size
+                elif back_free and abs(pos_y-tar_y) > 0.1:
+                    step_x -= step_size
         
         if direction == "l":
-            if left_free and pos_x-tar_x > 0.05 and back_free and not self.check_occupancy(cord_x-self.drone_map_width, cord_y+self.drone_map_width): # can move forward but are next to path
+            if left_free and pos_x-tar_x > 0.05 and back_free and back_right_free and back_left_free: # can move forward but are next to path
                 step_x = tar_x
-            elif left_free and tar_x - pos_x > 0.05 and front_free and not self.check_occupancy(cord_x+self.drone_map_width, cord_y+self.drone_map_width):
+            elif left_free and tar_x - pos_x > 0.05 and front_free and front_right_free and front_left_free:
                 step_x = tar_x
             elif left_free and abs(pos_y-tar_y) > 0.1: # and not close to target
                     step_y += step_size
             else:
-                if abs(pos_x-tar_x) > 0.35:
-                    if pos_x > tar_x: # too high
-                        if back_free:
-                            step_x -= step_size
-                    else: # too low
-                        if front_free:
-                            step_x += step_size
-                else:
-                    if front_free and tar_x < 4.6 and abs(pos_y-tar_y) > 0.1:
-                        step_x += step_size
-                    elif back_free and abs(pos_y-tar_y) > 0.1:
-                        step_x -= step_size
+                if front_free and tar_x < 4.2 and abs(pos_y-tar_y) > 0.1:
+                    step_x += step_size
+                elif back_free and abs(pos_y-tar_y) > 0.1:
+                    step_x -= step_size
 
         if direction == "u":
-            if front_free and abs(pos_x-tar_x) > 0.1: # and not close to target
+            if front_free and tar_y - pos_y > 0.05 and left_free and front_left_free and front_right_free:
+                step_y = tar_y
+            elif front_free and pos_y-tar_y > 0.05 and right_free and front_right_free and back_right_free:
+                step_y = tar_y
+            elif front_free and abs(pos_x-tar_x) > 0.1: # and not close to target
                     step_x += step_size
             else:
-                if abs(pos_y-tar_y) > 0.2: # too far left or right
-                    if pos_y > tar_y:
-                        if right_free:
-                            step_y -= step_size
-                    else:
-                        if left_free:
-                            step_y += step_size
+                if left_free and tar_y < 4.5 and abs(pos_x-tar_x) > 0.1:
+                        step_y += step_size
+                elif right_free and abs(pos_x-tar_x) > 0.1:
+                        step_y -= step_size
 
         if step_x == pos_x and step_y == pos_y:
             self.path_count += 1 # target behind obstacle, go to next
@@ -352,22 +384,16 @@ class Controller:
         
             return self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
 
-        # add some if close to target croping
+        # i dont remember what this does
         if direction == "r":
-            # if step_x < tar_x:
-            #     step_x = tar_x
             if step_y != pos_y and step_x == tar_x:
                 step_y = tar_y
         
         if direction == "l":
-            # if step_x > tar_x:
-            #     step_x = tar_x
             if step_y != pos_y and step_x == tar_x:
                 step_y = tar_y
         
         if direction == "u":
-            if step_y > tar_y:
-                step_y = tar_y
             if step_x != pos_x and step_y == tar_y:
                 step_x = tar_x
         
@@ -387,13 +413,11 @@ class Controller:
         if abs(sensor_data['x_global']-self.pid_x.setpoint) > 0.01 and abs(sensor_data['y_global']-self.pid_y.setpoint)> 0.01:
             return self.get_control(sensor_data['x_global'], sensor_data['y_global'], self.target_height, sensor_data['yaw'])
         
-        # print("stabilized above target")
         if sensor_data['range_down']>0.5:
             comand_z = sensor_data['range_down']-0.1
         else:
             comand_z = sensor_data['range_down']-0.05
         control_command = self.get_control(sensor_data['x_global'], sensor_data['y_global'], comand_z, sensor_data['yaw'])
-        # print(sensor_data['range_down'])
         
         if sensor_data['range_down'] < 0.015:
             print("[LOG] Landing successful")
@@ -424,16 +448,16 @@ class Controller:
         right_free = True
         
         # Front
-        if self.check_occupancy(cord_x+self.drone_map_width-self.offset_x, cord_y):
+        if self.check_occupancy(cord_x+self.drone_map_width-self.offset_x, cord_y) or self.check_occupancy(cord_x+self.drone_map_width+1-self.offset_x, cord_y):
             front_free = False
         # Left side
-        if self.check_occupancy(cord_x, cord_y+self.drone_map_width-self.offset_y) or self.check_occupancy(cord_x+self.drone_map_width-self.offset_x, cord_y+self.drone_map_width-self.offset_y):
+        if (self.check_occupancy(cord_x, cord_y+self.drone_map_width-self.offset_y) or self.check_occupancy(cord_x+self.drone_map_width-self.offset_x, cord_y+self.drone_map_width-self.offset_y) 
+            or self.check_occupancy(cord_x, cord_y+self.drone_map_width+1-self.offset_y) or self.check_occupancy(cord_x+self.drone_map_width-self.offset_x, cord_y+1+self.drone_map_width-self.offset_y)):
             left_free = False
         # Right side
-        if self.check_occupancy(cord_x, cord_y-self.drone_map_width+self.offset_y) or self.check_occupancy(cord_x+self.drone_map_width-self.offset_x, cord_y-self.drone_map_width+self.offset_y):
+        if (self.check_occupancy(cord_x, cord_y-self.drone_map_width+self.offset_y) or self.check_occupancy(cord_x+self.drone_map_width-self.offset_x, cord_y-self.drone_map_width+self.offset_y) or 
+            self.check_occupancy(cord_x, cord_y-1-self.drone_map_width+self.offset_y) or self.check_occupancy(cord_x+self.drone_map_width-self.offset_x, cord_y-1-self.drone_map_width+self.offset_y)):
             right_free = False
-
-        # print(left_free, front_free, right_free)
 
         if left_free and front_free and right_free:
             dir_x += step_size
@@ -453,7 +477,7 @@ class Controller:
         if not left_free and not front_free and right_free:
             dir_y -= step_size
         if not left_free and not front_free and not right_free: # front obstacle clips left and right
-            dir_x = pos_x - 0.1 # move back slightly
+            dir_x = pos_x - 0.025 # move back slightly
 
         # add running_out_of_map_protection if trying to move e.g. front & right on border
         if dir_y < pos_y and pos_y < 0.1:
@@ -490,8 +514,7 @@ class Controller:
 
         control_command[0] = d_x * np.cos(yaw) + d_y * np.sin(yaw)
         control_command[1] = -d_x * np.sin(yaw) + d_y * np.cos(yaw)
-        # control_command[2] = self.target_height + max(0, self.pid_z.update(height)) # should work
-        control_command[2] = height # should work
+        control_command[2] = height
         control_command[3] = self.pid_yaw.update(yaw)
 
         return control_command
