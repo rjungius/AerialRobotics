@@ -371,7 +371,7 @@ class Controller:
             elif front_free and abs(pos_x-tar_x) > 0.1: # and not close to target
                     step_x += step_size
             else:
-                if left_free and tar_y < 4.5 and abs(pos_x-tar_x) > 0.1:
+                if left_free and tar_y < 2.4 and abs(pos_x-tar_x) > 0.1:
                         step_y += step_size
                 elif right_free and abs(pos_x-tar_x) > 0.1:
                         step_y -= step_size
@@ -386,15 +386,15 @@ class Controller:
 
         # i dont remember what this does
         if direction == "r":
-            if step_y != pos_y and step_x == tar_x:
+            if step_y < tar_y:
                 step_y = tar_y
         
         if direction == "l":
-            if step_y != pos_y and step_x == tar_x:
+            if step_y > tar_y:
                 step_y = tar_y
         
         if direction == "u":
-            if step_x != pos_x and step_y == tar_y:
+            if step_x > tar_x:
                 step_x = tar_x
         
         if abs(pos_x-tar_x) < 0.1 and abs(pos_y-tar_y) < 0.1:
@@ -569,7 +569,8 @@ class Controller:
                     if self.map[i][j] <= 0-self.threshold: # Cell occupied or unexplored
                         return True
                 except:
-                    return True # hit map border
+                    pass
+                    # return True # hit map border
         return False
     
     def p2c(self, x):
